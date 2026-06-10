@@ -132,6 +132,70 @@ def leer_proceso(pid):
     return info
 
 
+def listar_threads(pid):
+    """
+    Lee /proc/<pid>/task/ y devuelve una lista de dicts con info de cada thread.
+    """
+    threads = []
+    ruta_task = f'/proc/{pid}/task'
+
+    for tid_str in os.listdir(ruta_task):
+        tid = int(tid_str)
+        try:
+            # El stat de un thread tiene el mismo formato que el de un proceso
+            info_stat = leer_stat_en_ruta(f'{ruta_task}/{tid_str}/stat')
+
+            # comm: nombre del thread (puede diferir del nombre del proceso)
+            with open(f'{ruta_task}/{tid_str}/comm', 'r') as f:
+                nombre_thread = f.read().strip()
+
+            # Context switches del thread, desde su status
+            ctx_vol, ctx_invol = leer_context_switches(f'{ruta_task}/{tid_str}/status')
+
+            threads.append({
+                'tid': tid,
+                'nombre': nombre_thread,
+                'estado': info_stat['estado'],
+                'utime': info_stat['utime'],
+                'stime': info_stat['stime'],
+                'ctx_voluntarios': ctx_vol,
+                'ctx_involuntarios': ctx_invol,
+            })
+        except (FileNotFoundError, ProcessLookupError):
+            # El thread pudo terminar entre el listdir y la lectura
+            continue
+
+    return threads
+
+
+def leer_stat_en_ruta(ruta):
+    """Igual que leer_stat pero recibe la ruta completa (sirve para threads)."""
+    with open(ruta, 'r') as f:
+        linea = f.read()
+
+    inicio_nombre = linea.find('(')
+    fin_nombre = linea.rfind(')')
+    resto = linea[fin_nombre+2:].split()
+
+    return {
+        'estado': resto[0],
+        'utime': int(resto[11]),
+        'stime': int(resto[12]),
+    }
+
+
+def leer_context_switches(ruta_status):
+    """Lee voluntary_ctxt_switches y nonvoluntary_ctxt_switches de un status."""
+    vol, invol = 0, 0
+    with open(ruta_status, 'r') as f:
+        for linea in f:
+            if linea.startswith('voluntary_ctxt_switches'):
+                vol = int(linea.split(':')[1].strip())
+            elif linea.startswith('nonvoluntary_ctxt_switches'):
+                invol = int(linea.split(':')[1].strip())
+    return vol, invol
+
+
 if __name__ == '__main__':
     pids = listar_pids()
     print(f'Total de procesos encontrados: {len(pids)}')
@@ -151,3 +215,7 @@ if __name__ == '__main__':
 
     print('\n--- Segmentos de memoria del propio proceso ---')
     print(leer_maps(os.getpid()))
+
+    print('\n--- Threads del propio proceso ---')
+    for t in listar_threads(os.getpid()):
+        print(t)
