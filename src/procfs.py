@@ -196,6 +196,51 @@ def leer_context_switches(ruta_status):
     return vol, invol
 
 
+# Tabla de señales: número -> nombre
+# (las más relevantes para el TP; hay más pero estas son las que pide la consigna)
+NOMBRES_SENALES = {
+    1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL',
+    5: 'SIGTRAP', 6: 'SIGABRT', 7: 'SIGBUS', 8: 'SIGFPE',
+    9: 'SIGKILL', 10: 'SIGUSR1', 11: 'SIGSEGV', 12: 'SIGUSR2',
+    13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM', 16: 'SIGSTKFLT',
+    17: 'SIGCHLD', 18: 'SIGCONT', 19: 'SIGSTOP', 20: 'SIGTSTP',
+    21: 'SIGTTIN', 22: 'SIGTTOU', 23: 'SIGURG', 24: 'SIGXCPU',
+    25: 'SIGXFSZ', 26: 'SIGVTALRM', 27: 'SIGPROF', 28: 'SIGWINCH',
+    29: 'SIGIO', 30: 'SIGPWR', 31: 'SIGSYS',
+}
+
+
+def decodificar_mascara_senales(mascara_hex):
+    """
+    Convierte una mascara hexadecimal de /proc (ej: SigCgt) en una
+    lista de nombres de señales (ej: ['SIGINT', 'SIGTERM']).
+    """
+    valor = int(mascara_hex, 16)
+    señales = []
+
+    for numero, nombre in NOMBRES_SENALES.items():
+        # El bit (numero-1) representa la señal 'numero'
+        # Ej: bit 0 = señal 1 (SIGHUP), bit 1 = señal 2 (SIGINT)
+        bit = numero - 1
+        if valor & (1 << bit):
+            señales.append(nombre)
+
+    return señales
+
+
+def leer_senales(pid):
+    """Devuelve un dict con las señales decodificadas en cada categoría."""
+    status = leer_status(pid)
+    return {
+        'bloqueadas': decodificar_mascara_senales(status['sigblk']),
+        'ignoradas': decodificar_mascara_senales(status['sigign']),
+        'con_handler': decodificar_mascara_senales(status['sigcgt']),
+        'pendientes_proceso': decodificar_mascara_senales(status['sigpnd']),
+        'pendientes_grupo': decodificar_mascara_senales(status['shdpnd']),
+    }
+
+
+
 if __name__ == '__main__':
     pids = listar_pids()
     print(f'Total de procesos encontrados: {len(pids)}')
@@ -219,3 +264,6 @@ if __name__ == '__main__':
     print('\n--- Threads del propio proceso ---')
     for t in listar_threads(os.getpid()):
         print(t)
+    
+    print('\n--- Señales del propio proceso ---')
+    print(leer_senales(os.getpid()))
