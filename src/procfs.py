@@ -240,6 +240,44 @@ def leer_senales(pid):
     }
 
 
+def listar_fds(pid):
+    """
+    Lee /proc/<pid>/fd/ y devuelve una lista de dicts: {fd, destino, tipo}.
+    """
+    fds = []
+    ruta_fd = f'/proc/{pid}/fd'
+
+    for fd_str in os.listdir(ruta_fd):
+        try:
+            destino = os.readlink(f'{ruta_fd}/{fd_str}')
+        except (FileNotFoundError, PermissionError):
+            # El FD pudo cerrarse entre el listdir y el readlink,
+            # o no tenemos permiso (proceso de otro usuario)
+            continue
+
+        # Clasificar el tipo según el destino del symlink
+        if destino.startswith('socket:'):
+            tipo = 'socket'
+        elif destino.startswith('pipe:'):
+            tipo = 'pipe'
+        elif destino.startswith('/dev/pts/') or destino.startswith('/dev/tty'):
+            tipo = 'tty'
+        elif destino.startswith('anon_inode:'):
+            tipo = 'anon_inode'
+        elif destino.startswith('/'):
+            tipo = 'file'
+        else:
+            tipo = 'otro'
+
+        fds.append({
+            'fd': int(fd_str),
+            'destino': destino,
+            'tipo': tipo,
+        })
+
+    return sorted(fds, key=lambda x: x['fd'])
+
+
 
 if __name__ == '__main__':
     pids = listar_pids()
@@ -267,3 +305,7 @@ if __name__ == '__main__':
     
     print('\n--- Señales del propio proceso ---')
     print(leer_senales(os.getpid()))
+
+    print('\n--- File descriptors del propio proceso ---')
+    for fd in listar_fds(os.getpid()):
+        print(fd)
