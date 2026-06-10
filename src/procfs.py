@@ -71,10 +71,53 @@ def leer_cmdline(pid):
     """Lee /proc/<pid>/cmdline y devuelve el comando completo como string."""
     with open(f'/proc/{pid}/cmdline', 'rb') as f:
         contenido = f.read()
-    # cmdline separa los argumentos con bytes nulos (\x00)
     partes = contenido.split(b'\x00')
     partes = [p.decode('utf-8', errors='replace') for p in partes if p]
     return ' '.join(partes)
+
+
+def leer_maps(pid):
+    """
+    Lee /proc/<pid>/maps y agrupa los segmentos de memoria por categoria.
+    Devuelve un dict {categoria: tamaño_total_kb}.
+    """
+    grupos = {
+        'text': 0,
+        'heap': 0,
+        'stack': 0,
+        'data': 0,
+        'anonima': 0,
+        'shared': 0,
+        'otros': 0,
+    }
+
+    with open(f'/proc/{pid}/maps', 'r') as f:
+        for linea in f:
+            partes = linea.split(None, 5)
+            rango = partes[0]
+            permisos = partes[1]
+            path = partes[5].strip() if len(partes) > 5 else ''
+
+            inicio_str, fin_str = rango.split('-')
+            tamaño_bytes = int(fin_str, 16) - int(inicio_str, 16)
+            tamaño_kb = tamaño_bytes // 1024
+
+            if '[heap]' in path:
+                grupos['heap'] += tamaño_kb
+            elif '[stack]' in path:
+                grupos['stack'] += tamaño_kb
+            elif 'x' in permisos and path.startswith('/'):
+                grupos['text'] += tamaño_kb
+            elif path.endswith('.so') or '.so.' in path:
+                grupos['shared'] += tamaño_kb
+            elif path == '' and 'w' in permisos:
+                grupos['anonima'] += tamaño_kb
+            elif path.startswith('/') and 'w' in permisos:
+                grupos['data'] += tamaño_kb
+            else:
+                grupos['otros'] += tamaño_kb
+
+    return grupos
 
 
 def leer_proceso(pid):
@@ -85,12 +128,11 @@ def leer_proceso(pid):
     try:
         info['cmdline'] = leer_cmdline(pid)
     except Exception:
-        info['cmdline'] = f'[{info["nombre"]}]'  # procesos kernel no tienen cmdline
+        info['cmdline'] = f'[{info["nombre"]}]'
     return info
 
 
 if __name__ == '__main__':
-    # Prueba: listar todos los procesos y mostrar los primeros 5
     pids = listar_pids()
     print(f'Total de procesos encontrados: {len(pids)}')
 
@@ -105,5 +147,7 @@ if __name__ == '__main__':
             if contador >= 5:
                 break
         except (FileNotFoundError, ProcessLookupError):
-            # El proceso pudo haber terminado entre listar_pids() y leerlo
             continue
+
+    print('\n--- Segmentos de memoria del propio proceso ---')
+    print(leer_maps(os.getpid()))
