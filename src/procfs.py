@@ -1,292 +1,188 @@
-"""
-procfs.py — Funciones para leer datos de procesos desde /proc.
-"""
 import os
+import signal
 
-
-NOMBRES_SENALES = {
-    1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL',
-    5: 'SIGTRAP', 6: 'SIGABRT', 7: 'SIGBUS', 8: 'SIGFPE',
-    9: 'SIGKILL', 10: 'SIGUSR1', 11: 'SIGSEGV', 12: 'SIGUSR2',
-    13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM', 16: 'SIGSTKFLT',
-    17: 'SIGCHLD', 18: 'SIGCONT', 19: 'SIGSTOP', 20: 'SIGTSTP',
-    21: 'SIGTTIN', 22: 'SIGTTOU', 23: 'SIGURG', 24: 'SIGXCPU',
-    25: 'SIGXFSZ', 26: 'SIGVTALRM', 27: 'SIGPROF', 28: 'SIGWINCH',
-    29: 'SIGIO', 30: 'SIGPWR', 31: 'SIGSYS',
+POLICIES = {
+    0: 'OTHER',
+    1: 'FIFO',
+    2: 'RR',
+    3: 'BATCH',
+    5: 'IDLE',
+    6: 'DEADLINE'
 }
 
+def obtener_usuarios():
+    usuarios = {}
+    try:
+        with open('/etc/passwd', 'r') as f:
+            for linea in f:
+                partes = linea.strip().split(':')
+                if len(partes) >= 3:
+                    try:
+                        usuarios[int(partes[2])] = partes[0]
+                    except ValueError:
+                        continue
+    except Exception:
+        pass
+    return usuarios
+
+USUARIOS_CACHE = obtener_usuarios()
 
 def listar_pids():
     pids = []
-    for entrada in os.listdir('/proc'):
-        if entrada.isdigit():
-            pids.append(int(entrada))
+    try:
+        for entrada in os.listdir('/proc'):
+            if entrada.isdigit():
+                pids.append(int(entrada))
+    except Exception:
+        pass
     return pids
 
-
 def leer_stat(pid):
-    with open(f'/proc/{pid}/stat', 'r') as f:
-        linea = f.read()
-    inicio_nombre = linea.find('(')
-    fin_nombre = linea.rfind(')')
-    pid_str = linea[:inicio_nombre].strip()
-    nombre = linea[inicio_nombre+1:fin_nombre]
-    resto = linea[fin_nombre+2:].split()
-    return {
-        'pid': int(pid_str),
-        'nombre': nombre,
-        'estado': resto[0],
-        'ppid': int(resto[1]),
-        'pgid': int(resto[3]),
-        'sid': int(resto[4]),
-        'utime': int(resto[11]),
-        'stime': int(resto[12]),
-        'priority': int(resto[15]),
-        'nice': int(resto[16]),
-    }
+    try:
+        with open(f'/proc/{pid}/stat', 'r') as f:
+            contenido = f.read()
+        
+        inicio_comm = contenido.find('(')
+        fin_comm = contenido.rfind(')')
+        if inicio_comm == -1 or fin_comm == -1:
+            return None
+        
+        comm = contenido[inicio_comm + 1:fin_comm]
+        resto = contenido[fin_comm + 2:].split()
+        
+        policy_num = int(resto[38]) if len(resto) > 38 else 0
+        policy_str = POLICIES.get(policy_num, str(policy_num))
+        rt_prio = int(resto[37]) if len(resto) > 37 else 0
 
-
-def leer_stat_en_ruta(ruta):
-    with open(ruta, 'r') as f:
-        linea = f.read()
-    inicio_nombre = linea.find('(')
-    fin_nombre = linea.rfind(')')
-    resto = linea[fin_nombre+2:].split()
-    return {
-        'estado': resto[0],
-        'utime': int(resto[11]),
-        'stime': int(resto[12]),
-    }
-
+        return {
+            'pid': pid,
+            'comm': comm,
+            'state': resto[0],
+            'ppid': int(resto[1]),
+            'minflt': int(resto[7]),
+            'majflt': int(resto[9]),
+            'utime': int(resto[11]),
+            'stime': int(resto[12]),
+            'priority': int(resto[15]),
+            'nice': int(resto[16]),
+            'num_threads': int(resto[17]),
+            'rt_priority': rt_prio,
+            'policy': policy_str
+        }
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+        return None
 
 def leer_status(pid):
-    datos = {}
-    with open(f'/proc/{pid}/status', 'r') as f:
-        for linea in f:
-            clave, _, valor = linea.partition(':')
-            datos[clave.strip()] = valor.strip()
-    return {
-        'nombre': datos.get('Name', ''),
-        'estado_raw': datos.get('State', ''),
-        'ppid': int(datos.get('PPid', 0)),
-        'threads': int(datos.get('Threads', 1)),
-        'vmsize_kb': datos.get('VmSize', '0 kB'),
-        'vmrss_kb': datos.get('VmRSS', '0 kB'),
-        'vmdata_kb': datos.get('VmData', '0 kB'),
-        'vmstk_kb': datos.get('VmStk', '0 kB'),
-        'vmexe_kb': datos.get('VmExe', '0 kB'),
-        'vmlib_kb': datos.get('VmLib', '0 kB'),
-        'vmswap_kb': datos.get('VmSwap', '0 kB'),
-        'sigblk': datos.get('SigBlk', '0'),
-        'sigign': datos.get('SigIgn', '0'),
-        'sigcgt': datos.get('SigCgt', '0'),
-        'sigpnd': datos.get('SigPnd', '0'),
-        'shdpnd': datos.get('ShdPnd', '0'),
-    }
+    try:
+        datos = {}
+        with open(f'/proc/{pid}/status', 'r') as f:
+            for linea in f:
+                clave, _, valor = linea.partition(':')
+                datos[clave.strip()] = valor.strip()
+        
+        uid_str = datos.get('Uid', '').split()
+        uid_real = int(uid_str[0]) if uid_str else 0
+        usuario_nom = USUARIOS_CACHE.get(uid_real, str(uid_real))
+        
+        gid_str = datos.get('Gid', '').split()
+        gid_real = int(gid_str[0]) if gid_str else 0
 
+        return {
+            'pid': pid,
+            'name': datos.get('Name', ''),
+            'state': datos.get('State', ''),
+            'uid': uid_real,
+            'usuario': usuario_nom,
+            'gid': gid_real,
+            'vm_size': datos.get('VmSize', '0 kB'),
+            'vm_rss': datos.get('VmRSS', '0 kB'),
+            'vm_hwm': datos.get('VmHWM', '0 kB'),
+            'threads': int(datos.get('Threads', 1)),
+            'cpus_allowed_list': datos.get('Cpus_allowed_list', ''),
+            'sig_blk': datos.get('SigBlk', '0'),
+            'sig_ign': datos.get('SigIgn', '0'),
+            'sig_cgt': datos.get('SigCgt', '0'),
+            'sig_pnd': datos.get('SigPnd', '0'),
+            'shd_pnd': datos.get('ShdPnd', '0')
+        }
+    except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+        return None
 
 def leer_cmdline(pid):
-    with open(f'/proc/{pid}/cmdline', 'rb') as f:
-        contenido = f.read()
-    partes = contenido.split(b'\x00')
-    partes = [p.decode('utf-8', errors='replace') for p in partes if p]
-    return ' '.join(partes)
-
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            contenido = f.read()
+        args = contenido.decode('utf-8', errors='replace').split('\x00')
+        cmd = " ".join([a for a in args if a])
+        return cmd if cmd else None
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
 
 def leer_maps(pid):
-    grupos = {'text': 0, 'heap': 0, 'stack': 0, 'data': 0,
-              'anonima': 0, 'shared': 0, 'otros': 0}
-    with open(f'/proc/{pid}/maps', 'r') as f:
-        for linea in f:
-            partes = linea.split(None, 5)
-            rango = partes[0]
-            permisos = partes[1]
-            path = partes[5].strip() if len(partes) > 5 else ''
-            inicio_str, fin_str = rango.split('-')
-            tamaño_kb = (int(fin_str, 16) - int(inicio_str, 16)) // 1024
-            if '[heap]' in path:
-                grupos['heap'] += tamaño_kb
-            elif '[stack]' in path:
-                grupos['stack'] += tamaño_kb
-            elif 'x' in permisos and path.startswith('/'):
-                grupos['text'] += tamaño_kb
-            elif path.endswith('.so') or '.so.' in path:
-                grupos['shared'] += tamaño_kb
-            elif path == '' and 'w' in permisos:
-                grupos['anonima'] += tamaño_kb
-            elif path.startswith('/') and 'w' in permisos:
-                grupos['data'] += tamaño_kb
-            else:
-                grupos['otros'] += tamaño_kb
-    return grupos
-
-
-def leer_context_switches(ruta_status):
-    vol, invol = 0, 0
-    with open(ruta_status, 'r') as f:
-        for linea in f:
-            if linea.startswith('voluntary_ctxt_switches'):
-                vol = int(linea.split(':')[1].strip())
-            elif linea.startswith('nonvoluntary_ctxt_switches'):
-                invol = int(linea.split(':')[1].strip())
-    return vol, invol
-
-
-def listar_threads(pid):
-    threads = []
-    ruta_task = f'/proc/{pid}/task'
-    for tid_str in os.listdir(ruta_task):
-        tid = int(tid_str)
-        try:
-            info_stat = leer_stat_en_ruta(f'{ruta_task}/{tid_str}/stat')
-            with open(f'{ruta_task}/{tid_str}/comm', 'r') as f:
-                nombre_thread = f.read().strip()
-            ctx_vol, ctx_invol = leer_context_switches(
-                f'{ruta_task}/{tid_str}/status')
-            threads.append({
-                'tid': tid,
-                'nombre': nombre_thread,
-                'estado': info_stat['estado'],
-                'utime': info_stat['utime'],
-                'stime': info_stat['stime'],
-                'ctx_voluntarios': ctx_vol,
-                'ctx_involuntarios': ctx_invol,
-            })
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-    return threads
-
-
-def decodificar_mascara_senales(mascara_hex):
-    valor = int(mascara_hex, 16)
-    return [nombre for numero, nombre in NOMBRES_SENALES.items()
-            if valor & (1 << (numero - 1))]
-
-
-def leer_senales(pid):
-    status = leer_status(pid)
-    return {
-        'bloqueadas': decodificar_mascara_senales(status['sigblk']),
-        'ignoradas': decodificar_mascara_senales(status['sigign']),
-        'con_handler': decodificar_mascara_senales(status['sigcgt']),
-        'pendientes_proceso': decodificar_mascara_senales(status['sigpnd']),
-        'pendientes_grupo': decodificar_mascara_senales(status['shdpnd']),
-    }
-
-
-def listar_fds(pid):
-    fds = []
-    ruta_fd = f'/proc/{pid}/fd'
-    for fd_str in os.listdir(ruta_fd):
-        try:
-            destino = os.readlink(f'{ruta_fd}/{fd_str}')
-        except (FileNotFoundError, PermissionError):
-            continue
-        if destino.startswith('socket:'):
-            tipo = 'socket'
-        elif destino.startswith('pipe:'):
-            tipo = 'pipe'
-        elif destino.startswith('/dev/pts/') or destino.startswith('/dev/tty'):
-            tipo = 'tty'
-        elif destino.startswith('anon_inode:'):
-            tipo = 'anon_inode'
-        elif destino.startswith('/'):
-            tipo = 'file'
-        else:
-            tipo = 'otro'
-        fds.append({'fd': int(fd_str), 'destino': destino, 'tipo': tipo})
-    return sorted(fds, key=lambda x: x['fd'])
-
-
-def leer_proceso(pid):
-    info = {}
-    info.update(leer_stat(pid))
-    info.update(leer_status(pid))
     try:
-        info['cmdline'] = leer_cmdline(pid)
-    except Exception:
-        info['cmdline'] = f'[{info["nombre"]}]'
-    return info
+        regiones = {
+            'heap_kb': 0,
+            'stack_kb': 0,
+            'so_kb': 0,
+            'bin_kb': 0,
+            'otros_kb': 0,
+            'total_kb': 0
+        }
+        with open(f'/proc/{pid}/maps', 'r') as f:
+            for linea in f:
+                partes = linea.split()
+                if len(partes) < 5:
+                    continue
+                rango = partes[0].split('-')
+                inicio = int(rango[0], 16)
+                fin = int(rango[1], 16)
+                tam_kb = (fin - inicio) // 1024
+                
+                pathname = partes[5] if len(partes) >= 6 else ''
+                perms = partes[1]
+                
+                regiones['total_kb'] += tam_kb
+                if pathname == '[heap]':
+                    regiones['heap_kb'] += tam_kb
+                elif pathname == '[stack]':
+                    regiones['stack_kb'] += tam_kb
+                elif '.so' in pathname:
+                    regiones['so_kb'] += tam_kb
+                elif pathname.startswith('/') and 'x' in perms:
+                    regiones['bin_kb'] += tam_kb
+                else:
+                    regiones['otros_kb'] += tam_kb
+        return regiones
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
 
+def leer_fds(pid):
+    fds = []
+    path_fd = f'/proc/{pid}/fd'
+    try:
+        for fd_nombre in os.listdir(path_fd):
+            ruta_enlace = os.path.join(path_fd, fd_nombre)
+            try:
+                destino = os.readlink(ruta_enlace)
+                fds.append({'fd': fd_nombre, 'destino': destino})
+            except (FileNotFoundError, PermissionError):
+                continue
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        pass
+    return fds
 
-def leer_sistema():
-    resultado = {}
-
-    meminfo = {}
-    with open('/proc/meminfo', 'r') as f:
-        for linea in f:
-            clave, _, valor = linea.partition(':')
-            meminfo[clave.strip()] = valor.strip()
-
-    resultado['mem_total_kb']   = int(meminfo.get('MemTotal', '0 kB').split()[0])
-    resultado['mem_libre_kb']   = int(meminfo.get('MemFree', '0 kB').split()[0])
-    resultado['mem_buffers_kb'] = int(meminfo.get('Buffers', '0 kB').split()[0])
-    resultado['mem_cached_kb']  = int(meminfo.get('Cached', '0 kB').split()[0])
-    resultado['swap_total_kb']  = int(meminfo.get('SwapTotal', '0 kB').split()[0])
-    resultado['swap_libre_kb']  = int(meminfo.get('SwapFree', '0 kB').split()[0])
-    resultado['mem_usada_kb'] = (
-        resultado['mem_total_kb']
-        - resultado['mem_libre_kb']
-        - resultado['mem_buffers_kb']
-        - resultado['mem_cached_kb']
-    )
-
-    with open('/proc/loadavg', 'r') as f:
-        partes = f.read().split()
-    resultado['load_1min']  = float(partes[0])
-    resultado['load_5min']  = float(partes[1])
-    resultado['load_15min'] = float(partes[2])
-    corriendo, totales = partes[3].split('/')
-    resultado['procs_corriendo'] = int(corriendo)
-    resultado['procs_totales']   = int(totales)
-
-    with open('/proc/stat', 'r') as f:
-        linea_cpu = f.readline()
-    campos = linea_cpu.split()
-    resultado['cpu_jiffies'] = {
-        'user':    int(campos[1]),
-        'nice':    int(campos[2]),
-        'system':  int(campos[3]),
-        'idle':    int(campos[4]),
-        'iowait':  int(campos[5]),
-        'irq':     int(campos[6]),
-        'softirq': int(campos[7]),
-    }
-
-    estados = {'R': 0, 'S': 0, 'D': 0, 'T': 0, 'Z': 0, 'otros': 0}
-    zombies = []
-    for pid in listar_pids():
-        try:
-            with open(f'/proc/{pid}/stat', 'r') as f:
-                linea = f.read()
-            fin = linea.rfind(')')
-            estado = linea[fin+2]
-            if estado in estados:
-                estados[estado] += 1
-            else:
-                estados['otros'] += 1
-            if estado == 'Z':
-                zombies.append(pid)
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-
-    resultado['estados_procesos'] = estados
-    resultado['zombies'] = zombies
-    return resultado
-
-
-if __name__ == '__main__':
-    pids = listar_pids()
-    print(f'Total de procesos: {len(pids)}')
-
-    for pid in pids[:5]:
-        try:
-            info = leer_proceso(pid)
-            print(f"PID {info['pid']:>6} | {info['estado']} | "
-                  f"{info['nombre']:<15} | RSS {info['vmrss_kb']:>12}")
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-
-    print('\n--- Sistema global ---')
-    import pprint
-    pprint.pprint(leer_sistema())
+def decodificar_senales(hex_mascara):
+    try:
+        valor = int(hex_mascara, 16)
+    except ValueError:
+        return []
+    
+    nombres = []
+    for sig in range(1, 65):
+        if valor & (1 << (sig - 1)):
+            try:
+                nom = signal.Signals(sig).name
+            except ValueError:
+                nom = f'SIG_{sig}'
+            nombres.append(nom)
+    return nombres
