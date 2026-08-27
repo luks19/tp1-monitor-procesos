@@ -1,368 +1,417 @@
-"""display.py — TUI con rich. Compatible WSL2."""
 import os
 import sys
+import tty
+import termios
+import fcntl
 import time
-import json
-import threading
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.live import Live
+from rich.layout import Layout
 from rich.text import Text
-from rich import box
-from src.utils import dump_snapshot
 
-console = Console()
-
-TECLAS_VISTA = {
-    '1': 'resumen', 'r': 'resumen',
-    '2': 'memoria', 'm': 'memoria',
-    '3': 'fds',     'f': 'fds',
-    '4': 'threads', 't': 'threads',
-    '5': 'senales', 's': 'senales',
-    '6': 'scheduling', 'p': 'scheduling',
-    '7': 'sistema', 'g': 'sistema',
+INTERVALOS_MINIMOS = {
+    'resumen': 0.5,
+    'threads': 0.5,
+    'memoria': 1.0,
+    'sistema': 1.0,
+    'fds': 2.0,
+    'senales': 5.0,
+    'scheduling': 5.0
 }
 
+VISTAS = ['resumen', 'memoria', 'fds', 'senales', 'threads', 'scheduling', 'sistema']
 
-def tabla_resumen(datos, seleccionado, filtro, orden):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",    width=7,  justify="right")
-    t.add_column("EST",    width=3)
-    t.add_column("CPU%",   width=6,  justify="right")
-    t.add_column("RSS(kB)",width=9,  justify="right")
-    t.add_column("THRD",   width=5,  justify="right")
-    t.add_column("NICE",   width=5,  justify="right")
-    t.add_column("NOMBRE", width=15)
-    t.add_column("COMANDO",           no_wrap=True)
-    try:
-        items = list(dict(datos).items())
-    except Exception:
-        return t
-    if orden == 'cpu':
-        items.sort(key=lambda x: x[1].get('cpu_pct', 0), reverse=True)
-    elif orden == 'rss':
-        items.sort(key=lambda x: int(str(x[1].get('vmrss_kb','0 kB')).split()[0]),
-                   reverse=True)
-    else:
-        items.sort(key=lambda x: x[0])
-    for pid, info in items:
-        nombre = info.get('nombre', '')
-        if filtro and filtro.lower() not in nombre.lower():
-            continue
-        estado = info.get('estado', '?')
-        color = {'R':'green','S':'white','D':'red','T':'yellow','Z':'magenta'}.get(estado,'white')
-        rss = str(info.get('vmrss_kb','0 kB')).split()[0]
-        estilo = "bold yellow on grey15" if pid == seleccionado else ""
-        t.add_row(str(pid), Text(estado, style=color),
-                  str(info.get('cpu_pct', 0.0)), rss,
-                  str(info.get('threads','')), str(info.get('nice','')),
-                  nombre, info.get('cmdline','')[:50], style=estilo)
-    return t
+def crear_panel_ayuda():
+    ayuda_texto = Text()
+    ayuda_texto.append("Comandos de Teclado:\n", style="bold cyan")
+    ayuda_texto.append("  1-7 / c      : Cambiar de vista activa\n")
+    ayuda_texto.append("  ↑ / ↓        : Navegar lista de procesos\n")
+    ayuda_texto.append("  Enter        : Fijar / Desfijar PID seleccionado (Pin)\n")
+    ayuda_texto.append("  /            : Filtrar por comando (escribir texto, Enter para confirmar)\n")
+    ayuda_texto.append("  u            : Filtrar por usuario (escribir texto, Enter para confirmar)\n")
+    ayuda_texto.append("  + / -        : Aumentar / Disminuir intervalo de la vista activa\n")
+    ayuda_texto.append("  h / ?        : Mostrar / Ocultar este panel de ayuda\n")
+    ayuda_texto.append("  q            : Salir del monitor de forma ordenada\n\n")
+    ayuda_texto.append("Señales POSIX Soportadas:\n", style="bold yellow")
+    ayuda_texto.append("  SIGHUP       : Recargar config.json y propagar intervalos a analizadores\n")
+    ayuda_texto.append("  SIGUSR1      : Generar snapshot dump en archivo JSON\n")
+    ayuda_texto.append("  SIGUSR2      : Toggle modo verbose (muestra hasta 20 FDs)\n")
+    ayuda_texto.append("  SIGTERM/INT  : Finalización limpia de todos los procesos hijos\n")
+    
+    return Panel(ayuda_texto, title="[bold green]Ayuda y Referencia[/bold green]", border_style="green")
 
+def tabla_resumen(datos, filtro_cmd, filtro_usr, indice_sel, pin_pid):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("USER", justify="left")
+    tabla.add_column("PR", justify="right")
+    tabla.add_column("NI", justify="right")
+    tabla.add_column("RES", justify="right")
+    tabla.add_column("S", justify="center")
+    tabla.add_column("%CPU", justify="right", style="green")
+    tabla.add_column("POLICY", justify="left")
+    tabla.add_column("MINFLT", justify="right")
+    tabla.add_column("MAJFLT", justify="right")
+    tabla.add_column("COMMAND", justify="left")
 
-def tabla_memoria(datos, seleccionado):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",    width=7, justify="right")
-    t.add_column("VmSize", width=9, justify="right")
-    t.add_column("VmRSS",  width=9, justify="right")
-    t.add_column("VmData", width=9, justify="right")
-    t.add_column("VmStk",  width=8, justify="right")
-    t.add_column("VmSwap", width=8, justify="right")
-    t.add_column("Heap",   width=8, justify="right")
-    t.add_column("Stack",  width=8, justify="right")
-    try:
-        items = sorted(dict(datos).items())
-    except Exception:
-        return t
-    for pid, info in items:
-        segs = info.get('segmentos', {})
-        estilo = "bold yellow on grey15" if pid == seleccionado else ""
-        t.add_row(str(pid),
-                  str(info.get('vmsize_kb','')).split()[0],
-                  str(info.get('vmrss_kb','')).split()[0],
-                  str(info.get('vmdata_kb','')).split()[0],
-                  str(info.get('vmstk_kb','')).split()[0],
-                  str(info.get('vmswap_kb','')).split()[0],
-                  str(segs.get('heap',0)), str(segs.get('stack',0)),
-                  style=estilo)
-    return t
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['command'].lower()]
+    if filtro_usr:
+        procs = [p for p in procs if filtro_usr.lower() in p['usuario'].lower()]
 
+    for i, p in enumerate(procs[:25]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
+        
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            str(p['usuario']),
+            str(p['priority']),
+            str(p['nice']),
+            str(p['vm_rss']),
+            str(p['state']),
+            f"{p['cpu_pct']:.1f}",
+            str(p.get('policy', 'OTHER')),
+            str(p.get('minflt', 0)),
+            str(p.get('majflt', 0)),
+            p['command'][:40],
+            style=estilo
+        )
+    return tabla, procs
 
-def tabla_fds(datos, seleccionado):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",    width=7, justify="right")
-    t.add_column("Total",  width=6, justify="right")
-    t.add_column("Files",  width=6, justify="right")
-    t.add_column("Sockets",width=8, justify="right")
-    t.add_column("Pipes",  width=7, justify="right")
-    t.add_column("TTYs",   width=6, justify="right")
-    t.add_column("Detalle", no_wrap=True)
-    try:
-        items = sorted(dict(datos).items())
-    except Exception:
-        return t
-    for pid, lista_fds in items:
-        if not isinstance(lista_fds, list):
-            continue
-        total   = len(lista_fds)
-        files   = sum(1 for f in lista_fds if f.get('tipo')=='file')
-        sockets = sum(1 for f in lista_fds if f.get('tipo')=='socket')
-        pipes   = sum(1 for f in lista_fds if f.get('tipo')=='pipe')
-        ttys    = sum(1 for f in lista_fds if f.get('tipo')=='tty')
-        det     = ', '.join(f"{f['fd']}:{f['destino'][:15]}" for f in lista_fds[:3])
-        estilo  = "bold yellow on grey15" if pid == seleccionado else ""
-        t.add_row(str(pid),str(total),str(files),str(sockets),
-                  str(pipes),str(ttys),det,style=estilo)
-    return t
+def tabla_memoria(datos, filtro_cmd, filtro_usr, indice_sel, pin_pid):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("NOMBRE", justify="left")
+    tabla.add_column("VmSize", justify="right")
+    tabla.add_column("VmRSS", justify="right")
+    tabla.add_column("VmHWM", justify="right")
+    tabla.add_column("HEAP (KB)", justify="right")
+    tabla.add_column("STACK (KB)", justify="right")
+    tabla.add_column("SO (KB)", justify="right")
+    tabla.add_column("TOTAL (KB)", justify="right", style="green")
 
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['nombre'].lower()]
 
-def tabla_threads(datos, seleccionado):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",   width=7, justify="right")
-    t.add_column("TID",   width=7, justify="right")
-    t.add_column("Nombre",width=15)
-    t.add_column("Est",   width=4)
-    t.add_column("utime", width=8, justify="right")
-    t.add_column("stime", width=8, justify="right")
-    t.add_column("CtxV",  width=7, justify="right")
-    t.add_column("CtxI",  width=7, justify="right")
-    try:
-        items = sorted(dict(datos).items())
-    except Exception:
-        return t
-    for pid, lista_th in items:
-        if not isinstance(lista_th, list):
-            continue
-        for th in lista_th:
-            estilo = "bold yellow on grey15" if pid == seleccionado else ""
-            t.add_row(str(pid), str(th.get('tid','')), th.get('nombre',''),
-                      th.get('estado',''), str(th.get('utime','')),
-                      str(th.get('stime','')), str(th.get('ctx_voluntarios','')),
-                      str(th.get('ctx_involuntarios','')), style=estilo)
-    return t
+    for i, p in enumerate(procs[:25]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
 
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            p['nombre'][:25],
+            str(p.get('vm_size', '0 kB')),
+            str(p.get('vm_rss', '0 kB')),
+            str(p.get('vm_hwm', '0 kB')),
+            str(p['heap_kb']),
+            str(p['stack_kb']),
+            str(p['so_kb']),
+            str(p['total_kb']),
+            style=estilo
+        )
+    return tabla, procs
 
-def tabla_senales(datos, seleccionado):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",        width=7, justify="right")
-    t.add_column("Con handler",          no_wrap=False)
-    t.add_column("Ignoradas",            no_wrap=False)
-    t.add_column("Bloqueadas",           no_wrap=False)
-    t.add_column("Pendientes",           no_wrap=False)
-    try:
-        items = sorted(dict(datos).items())
-    except Exception:
-        return t
-    for pid, info in items:
-        estilo = "bold yellow on grey15" if pid == seleccionado else ""
-        t.add_row(str(pid),
-                  ', '.join(info.get('con_handler',[])),
-                  ', '.join(info.get('ignoradas',[])),
-                  ', '.join(info.get('bloqueadas',[])),
-                  ', '.join(info.get('pendientes_proceso',[])),
-                  style=estilo)
-    return t
+def tabla_fds(datos, filtro_cmd, indice_sel, pin_pid, modo_verbose):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("NOMBRE", justify="left")
+    tabla.add_column("TOTAL FDs", justify="right", style="magenta")
+    tabla.add_column("DESCRIPTORES (FD -> DESTINO)", justify="left")
 
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['nombre'].lower()]
 
-def tabla_scheduling(datos, seleccionado):
-    t = Table(box=box.SIMPLE, expand=True, header_style="bold cyan")
-    t.add_column("PID",   width=7, justify="right")
-    t.add_column("Nice",  width=6, justify="right")
-    t.add_column("Prio",  width=6, justify="right")
-    t.add_column("PGID",  width=7, justify="right")
-    t.add_column("SID",   width=7, justify="right")
-    t.add_column("CtxVol",width=8, justify="right")
-    t.add_column("CtxInv",width=8, justify="right")
-    try:
-        items = sorted(dict(datos).items())
-    except Exception:
-        return t
-    for pid, info in items:
-        estilo = "bold yellow on grey15" if pid == seleccionado else ""
-        t.add_row(str(pid), str(info.get('nice','')), str(info.get('priority','')),
-                  str(info.get('pgid','')), str(info.get('sid','')),
-                  str(info.get('ctx_voluntarios','')),
-                  str(info.get('ctx_involuntarios','')), style=estilo)
-    return t
+    limite_fds = 20 if modo_verbose else 3
 
+    for i, p in enumerate(procs[:20]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
 
-def panel_sistema(datos):
-    try:
-        d = dict(datos)
-    except Exception:
-        return Panel("Sin datos aun...", title="Sistema Global")
-    mem_total  = d.get('mem_total_kb', 0)
-    mem_usada  = d.get('mem_usada_kb', 0)
-    mem_pct    = round(mem_usada / mem_total * 100, 1) if mem_total else 0
-    swap_total = d.get('swap_total_kb', 0)
-    swap_libre = d.get('swap_libre_kb', 0)
-    swap_pct   = round((swap_total-swap_libre)/swap_total*100,1) if swap_total else 0
-    estados    = d.get('estados_procesos', {})
-    zombies    = d.get('zombies', [])
-    texto = (
-        f"CPU:  {d.get('cpu_pct',0.0):>5.1f}%   "
-        f"Load: {d.get('load_1min',0):.2f} / {d.get('load_5min',0):.2f} / {d.get('load_15min',0):.2f}\n"
-        f"MEM:  {mem_usada//1024:>6} MB / {mem_total//1024} MB  ({mem_pct}%)\n"
-        f"SWAP: {(swap_total-swap_libre)//1024:>6} MB / {swap_total//1024} MB  ({swap_pct}%)\n"
-        f"Procs: R={estados.get('R',0)} S={estados.get('S',0)} "
-        f"D={estados.get('D',0)} T={estados.get('T',0)} Z={estados.get('Z',0)}  "
-        f"Zombies: {len(zombies)}\n"
-        f"Corriendo: {d.get('procs_corriendo',0)} / {d.get('procs_totales',0)}"
+        lista_fds = p.get('fds', [])
+        str_fds = ", ".join([f"{fd['fd']}->{fd['destino'][:20]}" for fd in lista_fds[:limite_fds]])
+        if len(lista_fds) > limite_fds:
+            str_fds += f" ... (+{len(lista_fds) - limite_fds} más)"
+
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            p['nombre'][:20],
+            str(p['cantidad_fds']),
+            str_fds,
+            style=estilo
+        )
+    return tabla, procs
+
+def tabla_senales(datos, filtro_cmd, indice_sel, pin_pid):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("NOMBRE", justify="left")
+    tabla.add_column("BLOQUEADAS (SigBlk)", justify="left")
+    tabla.add_column("IGNORADAS (SigIgn)", justify="left")
+    tabla.add_column("CON HANDLER (SigCgt)", justify="left")
+
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['nombre'].lower()]
+
+    for i, p in enumerate(procs[:20]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
+
+        blk = ", ".join(p['bloqueadas'][:4]) + ("..." if len(p['bloqueadas']) > 4 else "")
+        ign = ", ".join(p['ignoradas'][:4]) + ("..." if len(p['ignoradas']) > 4 else "")
+        cgt = ", ".join(p['con_handler'][:4]) + ("..." if len(p['con_handler']) > 4 else "")
+
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            p['nombre'][:20],
+            blk if blk else "-",
+            ign if ign else "-",
+            cgt if cgt else "-",
+            style=estilo
+        )
+    return tabla, procs
+
+def tabla_threads(datos, filtro_cmd, indice_sel, pin_pid):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("NOMBRE", justify="left")
+    tabla.add_column("THREADS", justify="right", style="magenta")
+    tabla.add_column("ESTADO", justify="center")
+    tabla.add_column("PRIORITY", justify="right")
+    tabla.add_column("NICE", justify="right")
+
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['nombre'].lower()]
+
+    for i, p in enumerate(procs[:25]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
+
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            p['nombre'][:30],
+            str(p['num_threads']),
+            str(p['state']),
+            str(p['priority']),
+            str(p['nice']),
+            style=estilo
+        )
+    return tabla, procs
+
+def tabla_scheduling(datos, filtro_cmd, indice_sel, pin_pid):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("PID", justify="right", style="cyan")
+    tabla.add_column("NOMBRE", justify="left")
+    tabla.add_column("POLICY", justify="left", style="green")
+    tabla.add_column("PRIORITY", justify="right")
+    tabla.add_column("RT_PRIO", justify="right")
+    tabla.add_column("NICE", justify="right")
+    tabla.add_column("CPUS ALLOWED", justify="left")
+
+    procs = datos.get('procesos', [])
+    if filtro_cmd:
+        procs = [p for p in procs if filtro_cmd.lower() in p['nombre'].lower()]
+
+    for i, p in enumerate(procs[:25]):
+        es_pin = (pin_pid == p['pid'])
+        es_cursor = (i == indice_sel)
+        estilo = "bold white on blue" if es_cursor else ("bold yellow" if es_pin else None)
+        marca_pin = " *" if es_pin else ""
+
+        tabla.add_row(
+            f"{p['pid']}{marca_pin}",
+            p['nombre'][:30],
+            str(p.get('policy', 'OTHER')),
+            str(p['priority']),
+            str(p.get('rt_priority', 0)),
+            str(p['nice']),
+            str(p.get('cpus_allowed', ''))[:20],
+            style=estilo
+        )
+    return tabla, procs
+
+def tabla_sistema(datos):
+    tabla = Table(expand=True, box=None)
+    tabla.add_column("Métrica", justify="left", style="cyan")
+    tabla.add_column("Valor", justify="left", style="green")
+
+    tabla.add_row("Total de Procesos", str(datos.get('total_procesos', 0)))
+    tabla.add_row("Uptime del Sistema", f"{datos.get('uptime', 0.0):.1f} segundos")
+    tabla.add_row("Memoria Total", str(datos.get('mem_total', '0 kB')))
+    tabla.add_row("Memoria Libre", str(datos.get('mem_free', '0 kB')))
+    tabla.add_row("Memoria Disponible", str(datos.get('mem_available', '0 kB')))
+
+    estados = datos.get('estados', {})
+    str_estados = ", ".join([f"{k}: {v}" for k, v in estados.items()])
+    tabla.add_row("Distribución de Estados", str_estados if str_estados else "-")
+    return tabla, []
+
+def generar_pantalla(vista_actual, snapshot_dict, intervalos_sync, flag_verbose, estado):
+    layout = Layout()
+    layout.split_column(
+        Layout(name="header", size=3),
+        Layout(name="body"),
+        Layout(name="footer", size=3)
     )
-    return Panel(texto, title="[bold cyan]Sistema Global[/]", border_style="cyan")
 
+    intervalo_actual = intervalos_sync[vista_actual].value
+    modo_v = bool(flag_verbose.value)
+    badge_verbose = "[bold green][VERBOSE: ON][/bold green]" if modo_v else "[dim][VERBOSE: OFF][/dim]"
+    
+    pin_info = f" | PIN: [yellow]PID {estado['pin_pid']}[/yellow]" if estado['pin_pid'] else ""
+    filtro_info = f" | FILTRO: '{estado['filtro_cmd']}'" if estado['filtro_cmd'] else ""
+    usr_info = f" | USER: '{estado['filtro_usr']}'" if estado['filtro_usr'] else ""
 
-def generar_pantalla(snapshot, vista, seleccionado, filtro, orden, intervalos):
-    try:
-        ts = snapshot[vista].get('ts', 0)
-    except Exception:
-        ts = 0
-    ts_str = time.strftime('%H:%M:%S', time.localtime(ts)) if ts else '--:--:--'
-    barra = (
-        f"[bold]Monitor[/] | Vista:[cyan]{vista}[/] | "
-        f"Orden:[yellow]{orden}[/] | {ts_str} | "
-        f"Intervalo:{intervalos.get(vista,'?')}s | "
-        f"[dim]1-7 vista  c orden  q salir[/]"
+    header_text = (
+        f"[bold cyan]MONITOR DE PROCESOS[/bold cyan] | Vista: [bold white on blue] {vista_actual.upper()} [/bold white on blue] "
+        f"| Intervalo: [bold]{intervalo_actual:.1f}s[/bold] {badge_verbose}{pin_info}{filtro_info}{usr_info}"
     )
-    try:
-        if vista == 'sistema':
-            datos = dict(snapshot['sistema']['datos'])
-            return Panel(panel_sistema(datos), title=barra, border_style="blue")
-        datos = dict(snapshot[vista]['datos'])
-    except Exception:
-        datos = {}
-    if vista == 'resumen':
-        tabla = tabla_resumen(datos, seleccionado, filtro, orden)
-    elif vista == 'memoria':
-        tabla = tabla_memoria(datos, seleccionado)
-    elif vista == 'fds':
-        tabla = tabla_fds(datos, seleccionado)
-    elif vista == 'threads':
-        tabla = tabla_threads(datos, seleccionado)
-    elif vista == 'senales':
-        tabla = tabla_senales(datos, seleccionado)
-    elif vista == 'scheduling':
-        tabla = tabla_scheduling(datos, seleccionado)
+    layout["header"].update(Panel(header_text, style="white on black"))
+
+    if estado['mostrar_ayuda']:
+        layout["body"].update(crear_panel_ayuda())
+        lista_actual = []
     else:
-        tabla = Table()
-    return Panel(tabla, title=barra, border_style="blue")
+        datos_vista = snapshot_dict.get(vista_actual, {})
+        if vista_actual == 'resumen':
+            tabla, lista_actual = tabla_resumen(datos_vista, estado['filtro_cmd'], estado['filtro_usr'], estado['indice_sel'], estado['pin_pid'])
+        elif vista_actual == 'memoria':
+            tabla, lista_actual = tabla_memoria(datos_vista, estado['filtro_cmd'], estado['filtro_usr'], estado['indice_sel'], estado['pin_pid'])
+        elif vista_actual == 'fds':
+            tabla, lista_actual = tabla_fds(datos_vista, estado['filtro_cmd'], estado['indice_sel'], estado['pin_pid'], modo_v)
+        elif vista_actual == 'senales':
+            tabla, lista_actual = tabla_senales(datos_vista, estado['filtro_cmd'], estado['indice_sel'], estado['pin_pid'])
+        elif vista_actual == 'threads':
+            tabla, lista_actual = tabla_threads(datos_vista, estado['filtro_cmd'], estado['indice_sel'], estado['pin_pid'])
+        elif vista_actual == 'scheduling':
+            tabla, lista_actual = tabla_scheduling(datos_vista, estado['filtro_cmd'], estado['indice_sel'], estado['pin_pid'])
+        elif vista_actual == 'sistema':
+            tabla, lista_actual = tabla_sistema(datos_vista)
+        else:
+            tabla = Table()
+            lista_actual = []
 
+        layout["body"].update(Panel(tabla, border_style="blue"))
 
-def iniciar_tui(snapshot, stop_event, flag_dump, flag_verbose,
-                flag_reload, intervalos, config_path):
+    if estado['modo_input']:
+        prompt = "Filtrar por Comando: " if estado['modo_input'] == 'cmd' else "Filtrar por Usuario: "
+        footer_text = f"[bold yellow]{prompt}[/bold yellow]{estado['buffer_input']}_  [dim](Enter: confirmar, Esc: cancelar)[/dim]"
+    else:
+        footer_text = "[bold]q[/bold]: Salir | [bold]1-7/c[/bold]: Vista | [bold]+/-[/bold]: Intervalo | [bold]Enter[/bold]: Pin | [bold]/[/bold]: Filtro | [bold]u[/bold]: User | [bold]h/?[/bold]: Ayuda"
+    
+    layout["footer"].update(Panel(footer_text, style="white on black"))
+    return layout, lista_actual
 
+def leer_tecla_no_bloqueante(fd):
+    try:
+        dr, _, _ = termios.select.select([fd], [], [], 0.05)
+        if dr:
+            return os.read(fd, 32).decode('utf-8', errors='ignore')
+    except Exception:
+        pass
+    return None
+
+def iniciar_tui(snapshot_dict, intervalos_sync, flag_verbose, stop_event):
+    console = Console()
+    vista_idx = 0
+    
     estado = {
-        'vista': 'resumen',
-        'seleccionado': None,
-        'filtro': '',
-        'orden': 'pid',
-        'pids_lista': [],
-        'idx': 0,
-        'tecla': None,
-        'lock': threading.Lock(),
+        'indice_sel': 0,
+        'pin_pid': None,
+        'filtro_cmd': '',
+        'filtro_usr': '',
+        'mostrar_ayuda': False,
+        'modo_input': None,
+        'buffer_input': ''
     }
 
-    def hilo_teclado():
-        try:
-            import termios, tty, fcntl, array
-            tty_file = open('/dev/tty', 'rb', buffering=0)
-            fd = tty_file.fileno()
-            old = termios.tcgetattr(fd)
-            # Vaciar buffer residual
-            try:
-                buf = array.array('i', [0])
-                fcntl.ioctl(fd, termios.FIONREAD, buf)
-                if buf[0] > 0:
-                    tty_file.read(buf[0])
-            except Exception:
-                pass
-            try:
-                tty.setcbreak(fd)
-                while not stop_event.is_set():
-                    ch_bytes = tty_file.read(1)
-                    if not ch_bytes:
-                        continue
-                    ch = ch_bytes.decode('utf-8', errors='ignore')
-                    if ch == '\x1b':
-                        try:
-                            ch2 = tty_file.read(1).decode('utf-8', errors='ignore')
-                            ch3 = tty_file.read(1).decode('utf-8', errors='ignore')
-                            if ch2 == '[':
-                                if ch3 == 'A': ch = 'UP'
-                                elif ch3 == 'B': ch = 'DOWN'
-                        except Exception:
-                            pass
-                    with estado['lock']:
-                        estado['tecla'] = ch
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                tty_file.close()
-        except Exception:
-            pass
-
-    t = threading.Thread(target=hilo_teclado, daemon=True)
-    t.start()
-    time.sleep(0.2)
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
 
     try:
-        with Live(console=console, refresh_per_second=2, screen=True) as live:
-            while not stop_event.is_set():
+        tty.setcbreak(fd)
+        while not stop_event.is_set():
+            vista_actual = VISTAS[vista_idx]
+            pantalla, procs_actuales = generar_pantalla(
+                vista_actual, snapshot_dict, intervalos_sync, flag_verbose, estado
+            )
+            
+            console.clear()
+            console.print(pantalla)
 
-                if flag_dump.value:
-                    flag_dump.value = 0
-                    dump_snapshot(snapshot)
+            tecla = leer_tecla_no_bloqueante(fd)
+            if not tecla:
+                time.sleep(0.1)
+                continue
 
-                if flag_reload.value:
-                    flag_reload.value = 0
-                    try:
-                        with open(config_path) as f:
-                            cfg = json.load(f)
-                        intervalos.update(cfg.get('intervalos', {}))
-                    except Exception:
-                        pass
+            # Manejo de entrada modal (Filtro interactivo)
+            if estado['modo_input']:
+                if tecla in ('\r', '\n'):
+                    if estado['modo_input'] == 'cmd':
+                        estado['filtro_cmd'] = estado['buffer_input']
+                    elif estado['modo_input'] == 'usr':
+                        estado['filtro_usr'] = estado['buffer_input']
+                    estado['modo_input'] = None
+                    estado['buffer_input'] = ''
+                elif tecla == '\x1b':  # Escape
+                    estado['modo_input'] = None
+                    estado['buffer_input'] = ''
+                elif tecla in ('\x7f', '\x08'):  # Backspace
+                    estado['buffer_input'] = estado['buffer_input'][:-1]
+                elif tecla.isprintable():
+                    estado['buffer_input'] += tecla
+                continue
 
-                with estado['lock']:
-                    tecla = estado['tecla']
-                    estado['tecla'] = None
+            # Manejo de atajos en modo normal
+            if tecla == 'q':
+                stop_event.set()
+                break
+            elif tecla in ('h', '?'):
+                estado['mostrar_ayuda'] = not estado['mostrar_ayuda']
+            elif tecla == 'c':
+                vista_idx = (vista_idx + 1) % len(VISTAS)
+                estado['indice_sel'] = 0
+            elif tecla in ('1', '2', '3', '4', '5', '6', '7'):
+                vista_idx = int(tecla) - 1
+                estado['indice_sel'] = 0
+            elif tecla == '+':
+                intervalos_sync[vista_actual].value = round(intervalos_sync[vista_actual].value + 0.5, 1)
+            elif tecla == '-':
+                minimo = INTERVALOS_MINIMOS.get(vista_actual, 0.5)
+                intervalos_sync[vista_actual].value = max(minimo, round(intervalos_sync[vista_actual].value - 0.5, 1))
+            elif tecla == '\x1b[A':  # Flecha Arriba
+                estado['indice_sel'] = max(0, estado['indice_sel'] - 1)
+            elif tecla == '\x1b[B':  # Flecha Abajo
+                if procs_actuales:
+                    estado['indice_sel'] = min(len(procs_actuales) - 1, estado['indice_sel'] + 1)
+            elif tecla in ('\r', '\n'):  # Enter -> Pin PID
+                if procs_actuales and estado['indice_sel'] < len(procs_actuales):
+                    pid_sel = procs_actuales[estado['indice_sel']]['pid']
+                    estado['pin_pid'] = None if estado['pin_pid'] == pid_sel else pid_sel
+            elif tecla == '/':
+                estado['modo_input'] = 'cmd'
+                estado['buffer_input'] = estado['filtro_cmd']
+            elif tecla == 'u':
+                estado['modo_input'] = 'usr'
+                estado['buffer_input'] = estado['filtro_usr']
 
-                if tecla:
-                    if tecla in ('q', '\x03', '\x04'):
-                        stop_event.set()
-                        break
-                    elif tecla in TECLAS_VISTA:
-                        estado['vista'] = TECLAS_VISTA[tecla]
-                    elif tecla == 'UP':
-                        estado['idx'] = max(0, estado['idx'] - 1)
-                    elif tecla == 'DOWN':
-                        estado['idx'] = min(
-                            len(estado['pids_lista']) - 1,
-                            estado['idx'] + 1)
-                    elif tecla == 'c':
-                        ciclo = ['pid', 'cpu', 'rss']
-                        estado['orden'] = ciclo[
-                            (ciclo.index(estado['orden']) + 1) % len(ciclo)]
-                    elif tecla == '+':
-                        v = estado['vista']
-                        intervalos[v] = min(60.0, intervalos.get(v, 2.0) + 0.5)
-                    elif tecla == '-':
-                        v = estado['vista']
-                        intervalos[v] = max(0.5, intervalos.get(v, 2.0) - 0.5)
-
-                try:
-                    pids = sorted(dict(snapshot['resumen']['datos']).keys())
-                    estado['pids_lista'] = pids
-                    if pids:
-                        idx = min(estado['idx'], len(pids) - 1)
-                        estado['seleccionado'] = pids[idx]
-                except Exception:
-                    pass
-
-                contenido = generar_pantalla(
-                    snapshot, estado['vista'], estado['seleccionado'],
-                    estado['filtro'], estado['orden'], intervalos)
-                live.update(contenido)
-                time.sleep(0.4)
-
-    except KeyboardInterrupt:
-        stop_event.set()
+            time.sleep(0.05)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
