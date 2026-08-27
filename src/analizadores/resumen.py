@@ -1,48 +1,76 @@
-"""Analizador de resumen: PID, estado, CPU%, RSS, threads, comando."""
+import os
 import time
-from src import procfs
+import procfs
 
+# Frecuencia de ticks del kernel obtenida dinámicamente
+CLK_TCK = float(os.sysconf(os.sysconf_names['SC_CLK_TCK']))
 
-def analizar(snapshot, pids, intervalo, stop_event):
-    tiempos_prev = {}
+def ejecutar_analizador_resumen(snapshot_dict, intervalo_val, stop_event):
+    """
+    Analizador del resumen del sistema y procesos.
+    Relista dinámicamente los PIDs en cada iteración y utiliza el SC_CLK_TCK del sistema.
+    """
+    tiempos_previos = {}
+    timestamp_previo = time.time()
 
     while not stop_event.is_set():
-        ahora = time.time()
-        datos = {}
+        pids_actuales = procfs.listar_pids()
+        timestamp_actual = time.time()
+        delta_tiempo = max(0.0001, timestamp_actual - timestamp_previo)
+        
+        lista_resumen = []
+        nuevos_tiempos = {}
 
-        for pid in pids:
-            try:
-                info = procfs.leer_proceso(pid)
-                clave = str(pid)
-
-                if clave in tiempos_prev:
-                    t_prev, ts_prev = tiempos_prev[clave]
-                    elapsed = ahora - ts_prev
-                    if elapsed > 0:
-                        delta = (info['utime'] + info['stime']) - t_prev
-                        cpu_pct = round((delta / 100.0) / elapsed * 100, 1)
-                    else:
-                        cpu_pct = 0.0
-                else:
-                    cpu_pct = 0.0
-
-                tiempos_prev[clave] = (info['utime'] + info['stime'], ahora)
-
-                datos[pid] = {
-                    'pid': pid,
-                    'ppid': info['ppid'],
-                    'estado': info['estado'],
-                    'nombre': info['nombre'],
-                    'cmdline': info['cmdline'],
-                    'threads': info['threads'],
-                    'vmrss_kb': info['vmrss_kb'],
-                    'cpu_pct': cpu_pct,
-                    'nice': info['nice'],
-                    'priority': info['priority'],
-                }
-            except (FileNotFoundError, ProcessLookupError):
+        for pid in pids_actuales:
+            stat = procfs.leer_stat(pid)
+            if not stat:
                 continue
+            
+            status = procfs.leer_status(pid)
+            cmdline = procfs.leer_cmdline(pid)
+            
+            # Cálculo de %CPU
+            tiempo_total_proc = stat['utime'] + stat['stime']
+            nuevos_tiempos[pid] = tiempo_total_proc
+            
+            tiempo_ant = tiempos_previos.get(pid, tiempo_total_proc)
+            delta_proc_ticks = max(0, tiempo_total_proc - tiempo_ant)
+            
+            # cpu_pct = (ticks_consumidos / CLK_TCK) / tiempo_transcurrido * 100
+            cpu_pct = round(((delta_proc_ticks / CLK_TCK) / delta_tiempo) * 100.0, 1)
 
-        snapshot['resumen']['datos'] = datos
-        snapshot['resumen']['ts'] = ahora
-        stop_event.wait(timeout=intervalo)
+            nombre_cmd = cmdline if cmdline else stat['comm']
+            usuario = status['usuario'] if status else 'unknown'
+            vm_rss = status['vm_rss'] if status else '0 kB'
+
+            lista_resumen.append({
+                'pid': pid,
+                'usuario': usuario,
+                'priority': stat['priority'],
+                'nice': stat['nice'],
+                'vm_rss': vm_rss,
+                'state': stat['state'],
+                'cpu_pct': cpu_pct,
+                'command': nombre_cmd,
+                'minflt': stat['minflt'],
+                'majflt': stat['majflt'],
+                'policy': stat['policy'],
+                'rt_priority': stat['rt_priority']
+            })
+
+        # Ordenar por uso de CPU descendente por defecto
+        lista_resumen.sort(key=lambda x: x['cpu_pct'], reverse=True)
+
+        snapshot_dict['resumen'] = {
+            'timestamp': timestamp_actual,
+            'procesos': lista_resumen,
+            'total_procesos': len(lista_resumen)
+        }
+
+        tiempos_previos = nuevos_tiempos
+        timestamp_previo = timestamp_actual
+
+        # Espera dinámica basada en el objeto de memoria compartida
+        t_espera = intervalo_val.value
+        if stop_event.wait(timeout=t_espera):
+            break
