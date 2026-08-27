@@ -2,6 +2,7 @@ import os
 import sys
 import tty
 import termios
+import select
 import fcntl
 import time
 from rich.console import Console
@@ -9,6 +10,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.layout import Layout
 from rich.text import Text
+from rich.live import Live
 
 INTERVALOS_MINIMOS = {
     'resumen': 0.5,
@@ -319,11 +321,11 @@ def generar_pantalla(vista_actual, snapshot_dict, intervalos_sync, flag_verbose,
     layout["footer"].update(Panel(footer_text, style="white on black"))
     return layout, lista_actual
 
-def leer_tecla_no_bloqueante(fd):
+def leer_tecla_no_bloqueante(tty_fd):
     try:
-        dr, _, _ = termios.select.select([fd], [], [], 0.05)
+        dr, _, _ = select.select([tty_fd], [], [], 0.05)
         if dr:
-            return os.read(fd, 32).decode('utf-8', errors='ignore')
+            return os.read(tty_fd, 32).decode('utf-8', errors='ignore')
     except Exception:
         pass
     return None
@@ -342,76 +344,78 @@ def iniciar_tui(snapshot_dict, intervalos_sync, flag_verbose, stop_event):
         'buffer_input': ''
     }
 
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
+    # Abrir directamente /dev/tty para control exclusivo del teclado sin colisionar con buffers
+    tty_fd = os.open('/dev/tty', os.O_RDWR)
+    old_settings = termios.tcgetattr(tty_fd)
 
     try:
-        tty.setcbreak(fd)
-        while not stop_event.is_set():
-            vista_actual = VISTAS[vista_idx]
-            pantalla, procs_actuales = generar_pantalla(
-                vista_actual, snapshot_dict, intervalos_sync, flag_verbose, estado
-            )
-            
-            console.clear()
-            console.print(pantalla)
+        tty.setcbreak(tty_fd)
+        with Live(console=console, screen=True, auto_refresh=False) as live:
+            while not stop_event.is_set():
+                vista_actual = VISTAS[vista_idx]
+                pantalla, procs_actuales = generar_pantalla(
+                    vista_actual, snapshot_dict, intervalos_sync, flag_verbose, estado
+                )
+                
+                live.update(pantalla, refresh=True)
 
-            tecla = leer_tecla_no_bloqueante(fd)
-            if not tecla:
-                time.sleep(0.1)
-                continue
+                tecla = leer_tecla_no_bloqueante(tty_fd)
+                if not tecla:
+                    time.sleep(0.1)
+                    continue
 
-            # Manejo de entrada modal (Filtro interactivo)
-            if estado['modo_input']:
-                if tecla in ('\r', '\n'):
-                    if estado['modo_input'] == 'cmd':
-                        estado['filtro_cmd'] = estado['buffer_input']
-                    elif estado['modo_input'] == 'usr':
-                        estado['filtro_usr'] = estado['buffer_input']
-                    estado['modo_input'] = None
-                    estado['buffer_input'] = ''
-                elif tecla == '\x1b':  # Escape
-                    estado['modo_input'] = None
-                    estado['buffer_input'] = ''
-                elif tecla in ('\x7f', '\x08'):  # Backspace
-                    estado['buffer_input'] = estado['buffer_input'][:-1]
-                elif tecla.isprintable():
-                    estado['buffer_input'] += tecla
-                continue
+                # Modo de edición de filtros
+                if estado['modo_input']:
+                    if tecla in ('\r', '\n'):
+                        if estado['modo_input'] == 'cmd':
+                            estado['filtro_cmd'] = estado['buffer_input']
+                        elif estado['modo_input'] == 'usr':
+                            estado['filtro_usr'] = estado['buffer_input']
+                        estado['modo_input'] = None
+                        estado['buffer_input'] = ''
+                    elif tecla == '\x1b':
+                        estado['modo_input'] = None
+                        estado['buffer_input'] = ''
+                    elif tecla in ('\x7f', '\x08'):
+                        estado['buffer_input'] = estado['buffer_input'][:-1]
+                    elif tecla.isprintable():
+                        estado['buffer_input'] += tecla
+                    continue
 
-            # Manejo de atajos en modo normal
-            if tecla == 'q':
-                stop_event.set()
-                break
-            elif tecla in ('h', '?'):
-                estado['mostrar_ayuda'] = not estado['mostrar_ayuda']
-            elif tecla == 'c':
-                vista_idx = (vista_idx + 1) % len(VISTAS)
-                estado['indice_sel'] = 0
-            elif tecla in ('1', '2', '3', '4', '5', '6', '7'):
-                vista_idx = int(tecla) - 1
-                estado['indice_sel'] = 0
-            elif tecla == '+':
-                intervalos_sync[vista_actual].value = round(intervalos_sync[vista_actual].value + 0.5, 1)
-            elif tecla == '-':
-                minimo = INTERVALOS_MINIMOS.get(vista_actual, 0.5)
-                intervalos_sync[vista_actual].value = max(minimo, round(intervalos_sync[vista_actual].value - 0.5, 1))
-            elif tecla == '\x1b[A':  # Flecha Arriba
-                estado['indice_sel'] = max(0, estado['indice_sel'] - 1)
-            elif tecla == '\x1b[B':  # Flecha Abajo
-                if procs_actuales:
-                    estado['indice_sel'] = min(len(procs_actuales) - 1, estado['indice_sel'] + 1)
-            elif tecla in ('\r', '\n'):  # Enter -> Pin PID
-                if procs_actuales and estado['indice_sel'] < len(procs_actuales):
-                    pid_sel = procs_actuales[estado['indice_sel']]['pid']
-                    estado['pin_pid'] = None if estado['pin_pid'] == pid_sel else pid_sel
-            elif tecla == '/':
-                estado['modo_input'] = 'cmd'
-                estado['buffer_input'] = estado['filtro_cmd']
-            elif tecla == 'u':
-                estado['modo_input'] = 'usr'
-                estado['buffer_input'] = estado['filtro_usr']
+                # Atajos en modo normal
+                if tecla == 'q':
+                    stop_event.set()
+                    break
+                elif tecla in ('h', '?'):
+                    estado['mostrar_ayuda'] = not estado['mostrar_ayuda']
+                elif tecla == 'c':
+                    vista_idx = (vista_idx + 1) % len(VISTAS)
+                    estado['indice_sel'] = 0
+                elif tecla in ('1', '2', '3', '4', '5', '6', '7'):
+                    vista_idx = int(tecla) - 1
+                    estado['indice_sel'] = 0
+                elif tecla == '+':
+                    intervalos_sync[vista_actual].value = round(intervalos_sync[vista_actual].value + 0.5, 1)
+                elif tecla == '-':
+                    minimo = INTERVALOS_MINIMOS.get(vista_actual, 0.5)
+                    intervalos_sync[vista_actual].value = max(minimo, round(intervalos_sync[vista_actual].value - 0.5, 1))
+                elif tecla == '\x1b[A':  # Flecha Arriba
+                    estado['indice_sel'] = max(0, estado['indice_sel'] - 1)
+                elif tecla == '\x1b[B':  # Flecha Abajo
+                    if procs_actuales:
+                        estado['indice_sel'] = min(len(procs_actuales) - 1, estado['indice_sel'] + 1)
+                elif tecla in ('\r', '\n'):  # Enter -> Pin PID
+                    if procs_actuales and estado['indice_sel'] < len(procs_actuales):
+                        pid_sel = procs_actuales[estado['indice_sel']]['pid']
+                        estado['pin_pid'] = None if estado['pin_pid'] == pid_sel else pid_sel
+                elif tecla == '/':
+                    estado['modo_input'] = 'cmd'
+                    estado['buffer_input'] = estado['filtro_cmd']
+                elif tecla == 'u':
+                    estado['modo_input'] = 'usr'
+                    estado['buffer_input'] = estado['filtro_usr']
 
-            time.sleep(0.05)
+                time.sleep(0.05)
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        termios.tcsetattr(tty_fd, termios.TCSADRAIN, old_settings)
+        os.close(tty_fd)
