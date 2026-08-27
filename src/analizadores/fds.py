@@ -1,16 +1,33 @@
-"""Analizador de file descriptors."""
 import time
-from src import procfs
+import procfs
 
-
-def analizar(snapshot, pids, intervalo, stop_event):
+def ejecutar_analizador_fds(snapshot_dict, intervalo_val, stop_event):
     while not stop_event.is_set():
-        datos = {}
+        pids = procfs.listar_pids()
+        datos_fds = []
+
         for pid in pids:
-            try:
-                datos[pid] = procfs.listar_fds(pid)
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
-                continue
-        snapshot['fds']['datos'] = datos
-        snapshot['fds']['ts'] = time.time()
-        stop_event.wait(timeout=intervalo)
+            fds = procfs.leer_fds(pid)
+            stat = procfs.leer_stat(pid)
+            cmdline = procfs.leer_cmdline(pid)
+
+            nombre = cmdline if cmdline else (stat['comm'] if stat else f'PID {pid}')
+
+            datos_fds.append({
+                'pid': pid,
+                'nombre': nombre,
+                'cantidad_fds': len(fds),
+                'fds': fds
+            })
+
+        datos_fds.sort(key=lambda x: x['cantidad_fds'], reverse=True)
+
+        snapshot_dict['fds'] = {
+            'timestamp': time.time(),
+            'procesos': datos_fds,
+            'total_procesos': len(datos_fds)
+        }
+
+        t_espera = intervalo_val.value
+        if stop_event.wait(timeout=t_espera):
+            break

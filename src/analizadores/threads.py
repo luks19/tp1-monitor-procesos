@@ -1,16 +1,36 @@
-"""Analizador de threads (LWPs)."""
 import time
-from src import procfs
+import procfs
 
-
-def analizar(snapshot, pids, intervalo, stop_event):
+def ejecutar_analizador_threads(snapshot_dict, intervalo_val, stop_event):
     while not stop_event.is_set():
-        datos = {}
+        pids = procfs.listar_pids()
+        datos_threads = []
+
         for pid in pids:
-            try:
-                datos[pid] = procfs.listar_threads(pid)
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
+            stat = procfs.leer_stat(pid)
+            if not stat:
                 continue
-        snapshot['threads']['datos'] = datos
-        snapshot['threads']['ts'] = time.time()
-        stop_event.wait(timeout=intervalo)
+            
+            cmdline = procfs.leer_cmdline(pid)
+            nombre = cmdline if cmdline else stat['comm']
+
+            datos_threads.append({
+                'pid': pid,
+                'nombre': nombre,
+                'num_threads': stat['num_threads'],
+                'state': stat['state'],
+                'priority': stat['priority'],
+                'nice': stat['nice']
+            })
+
+        datos_threads.sort(key=lambda x: x['num_threads'], reverse=True)
+
+        snapshot_dict['threads'] = {
+            'timestamp': time.time(),
+            'procesos': datos_threads,
+            'total_procesos': len(datos_threads)
+        }
+
+        t_espera = intervalo_val.value
+        if stop_event.wait(timeout=t_espera):
+            break

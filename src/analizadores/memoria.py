@@ -1,30 +1,45 @@
-"""Analizador de memoria: segmentos, swap."""
 import time
-from src import procfs
+import procfs
 
-
-def analizar(snapshot, pids, intervalo, stop_event):
+def ejecutar_analizador_memoria(snapshot_dict, intervalo_val, stop_event):
     while not stop_event.is_set():
-        datos = {}
+        pids = procfs.listar_pids()
+        datos_memoria = []
+
         for pid in pids:
-            try:
-                status = procfs.leer_status(pid)
-                try:
-                    maps = procfs.leer_maps(pid)
-                except PermissionError:
-                    maps = {}
-                datos[pid] = {
-                    'vmsize_kb': status['vmsize_kb'],
-                    'vmrss_kb':  status['vmrss_kb'],
-                    'vmdata_kb': status['vmdata_kb'],
-                    'vmstk_kb':  status['vmstk_kb'],
-                    'vmexe_kb':  status['vmexe_kb'],
-                    'vmlib_kb':  status['vmlib_kb'],
-                    'vmswap_kb': status['vmswap_kb'],
-                    'segmentos': maps,
-                }
-            except (FileNotFoundError, ProcessLookupError, PermissionError):
+            maps = procfs.leer_maps(pid)
+            if not maps:
                 continue
-        snapshot['memoria']['datos'] = datos
-        snapshot['memoria']['ts'] = time.time()
-        stop_event.wait(timeout=intervalo)
+            
+            status = procfs.leer_status(pid)
+            stat = procfs.leer_stat(pid)
+            cmdline = procfs.leer_cmdline(pid)
+
+            nombre = cmdline if cmdline else (stat['comm'] if stat else f'PID {pid}')
+            
+            datos_memoria.append({
+                'pid': pid,
+                'nombre': nombre,
+                'vm_size': status['vm_size'] if status else '0 kB',
+                'vm_rss': status['vm_rss'] if status else '0 kB',
+                'vm_hwm': status['vm_hwm'] if status else '0 kB',
+                'minflt': stat['minflt'] if stat else 0,
+                'majflt': stat['majflt'] if stat else 0,
+                'heap_kb': maps['heap_kb'],
+                'stack_kb': maps['stack_kb'],
+                'so_kb': maps['so_kb'],
+                'bin_kb': maps['bin_kb'],
+                'total_kb': maps['total_kb']
+            })
+
+        datos_memoria.sort(key=lambda x: x['total_kb'], reverse=True)
+
+        snapshot_dict['memoria'] = {
+            'timestamp': time.time(),
+            'procesos': datos_memoria,
+            'total_procesos': len(datos_memoria)
+        }
+
+        t_espera = intervalo_val.value
+        if stop_event.wait(timeout=t_espera):
+            break
