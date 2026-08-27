@@ -1,89 +1,81 @@
-# TP1 — Monitor de Procesos y Threads
+# Monitor de Procesos y Threads en Linux
 
-**Computación II — Universidad de Mendoza — 2026**
+Monitor de procesos y threads del sistema operativo Linux en tiempo real implementado en Python 3 sobre arquitectura multiproceso POSIX, sin dependencias de bibliotecas de terceros para la extracción de métricas del kernel (`/proc`).
 
-## Descripción
+---
 
-Monitor de procesos del sistema operativo Linux en tiempo real, similar a `htop`.
-Lee `/proc` directamente (sin `psutil`) y muestra 7 vistas alternables:
-resumen, memoria, file descriptors, threads, señales, scheduling y sistema global.
+## Arquitectura del Sistema
 
-Arquitectura multiproceso: un recolector + 7 analizadores paralelos + Manager compartido + TUI con `rich`.
+El sistema implementa un modelo concurrente desacoplado basado en procesos independientes:
 
-## Requisitos
+- **Analizadores Paralelos:** Siete procesos independientes (`multiprocessing.Process`) recolectan información específica desde `/proc` (`resumen`, `memoria`, `fds`, `senales`, `threads`, `scheduling`, `sistema`). Cada worker relista dinámicamente los PIDs en cada ciclo y duerme a su propio ritmo.
+- **Memoria Compartida y Sincronización:**
+  - Los intervalos de muestreo se gestionan mediante escalares compartidos en memoria (`multiprocessing.Value('d', ...)`), permitiendo la actualización dinámica y atómica desde la TUI o ante señales del sistema.
+  - Las señales asíncronas se propagan mediante banderas compartidas (`multiprocessing.Value('b', ...)`).
+  - Los datos analizados se centralizan en un diccionario administrado por `multiprocessing.Manager`.
+  - La terminación limpia y coordinada se realiza mediante un `multiprocessing.Event` (`stop_event`).
+- **Interfaz de Usuario (TUI):** Renderizado en terminal con `rich` utilizando entrada no bloqueante por `/dev/tty` con `termios` en modo cbreak.
 
-- Docker y Docker Compose
+---
 
-## Cómo correr
+## Vistas Disponibles
 
-    docker compose up --build
+1. **Resumen (`resumen`):** Métricas principales de procesos (PID, USER, PR, NI, RES, S, %CPU calculado dinámicamente con `SC_CLK_TCK`, POLICY, MINFLT, MAJFLT, COMMAND).
+2. **Memoria (`memoria`):** Segmentación y tamaño real de memoria virtual (`VmSize`, `VmRSS`, `VmHWM`, heap, stack, `.so`, ejecutables y total en KB).
+3. **Descriptores de Archivos (`fds`):** Cantidad de FDs y resolución de enlaces simbólicos (`fd -> target`).
+4. **Señales (`senales`):** Decodificación de máscaras POSIX de señales bloqueadas (`SigBlk`), ignoradas (`SigIgn`) y con manejador (`SigCgt`).
+5. **Threads (`threads`):** Conteo de hilos por proceso, estado, prioridad y nivel nice.
+6. **Scheduling (`scheduling`):** Políticas de planificación del kernel (OTHER, FIFO, RR, BATCH, IDLE, DEADLINE), prioridades de tiempo real y afinidad de CPUs (`Cpus_allowed_list`).
+7. **Sistema (`sistema`):** Métricas globales del host (uptime, memoria total, libre, disponible y distribución de estados de procesos).
 
-Para correr sin Docker (requiere Python 3.11+ y Linux):
+---
 
-    pip install rich
-    python3 -m src.main
-
-## Keybindings
+## Controles e Interacción (Keybindings)
 
 | Tecla | Acción |
-|-------|--------|
-| 1-7 / r m f t s p g | Cambiar vista |
-| Arriba / Abajo | Navegar procesos |
-| c | Ciclar orden (PID / CPU% / RSS) |
-| + / - | Ajustar intervalo de la vista activa |
-| / | Filtrar por nombre |
-| h / ? | Ayuda |
-| q | Salir |
+| :--- | :--- |
+| `1` - `7` / `c` | Cambiar entre vistas activas |
+| `↑` / `↓` | Navegar la lista de procesos |
+| `Enter` | Fijar / Desfijar (Pin) el PID seleccionado |
+| `/` | Modo interactivo: filtrar procesos por nombre de comando (`COMMAND`) |
+| `u` | Modo interactivo: filtrar procesos por usuario (`USER`) |
+| `+` | Incrementar el intervalo de actualización de la vista actual (+0.5s) |
+| `-` | Decrementar el intervalo de actualización respetando los límites mínimos |
+| `h` / `?` | Abrir / Cerrar el panel modal de ayuda |
+| `q` | Finalizar el monitor y cerrar ordenadamente todos los procesos hijos |
 
-## Señales
+---
 
-    kill -SIGUSR1 <PID>   # dump del snapshot a dump_<timestamp>.json
-    kill -SIGUSR2 <PID>   # toggle modo verbose
-    kill -SIGHUP  <PID>   # recargar config.json
+## Señales POSIX Soportadas
 
-## Arquitectura
+- **`SIGHUP` (`kill -HUP <PID>`):** Relee `config.json` y actualiza inmediatamente los objetos de memoria compartida (`multiprocessing.Value`) de cada analizador activo respetando los umbrales mínimos.
+- **`SIGUSR1` (`kill -USR1 <PID>`):** Genera un volcado completo de la instantánea actual del sistema en formato JSON (`dump_<timestamp>.json`).
+- **`SIGUSR2` (`kill -USR2 <PID>`):** Alterna el modo *verbose* en pantalla, expandiendo la visualización de descriptores de archivos (de 3 a 20 FDs visibles).
+- **`SIGTERM` / `SIGINT`:** Despierta a los analizadores mediante `stop_event`, espera su terminación (`join`) y cierra el `Manager` sin dejar procesos huérfanos.
 
-    main.py
-    ├── Manager (snapshot compartido entre procesos)
-    ├── 7 analizadores (procesos independientes, cada uno con su intervalo)
-    │   ├── resumen.py    — CPU%, RSS, estado, threads  (cada 2s)
-    │   ├── memoria.py    — segmentos, swap             (cada 3s)
-    │   ├── fds.py        — file descriptors            (cada 5s)
-    │   ├── threads.py    — LWPs por proceso            (cada 2s)
-    │   ├── senales.py    — máscaras decodificadas      (cada 10s)
-    │   ├── scheduling.py — nice, priority, ctx switches(cada 10s)
-    │   └── sistema.py    — CPU global, memoria, load   (cada 2s)
-    └── display.py        — TUI con rich (7 vistas alternables)
+---
 
-## Decisiones de diseño
+## Restricciones de Intervalos Mínimos
 
-**Por qué Manager.dict y no Value/Array**
-Los datos de cada proceso son estructuras complejas (dicts anidados con strings y listas).
-Value y Array solo soportan tipos primitivos de C. Manager.dict permite compartir
-objetos Python arbitrarios entre procesos, a costa de mayor overhead por IPC.
+Para evitar sobrecarga innecesaria sobre `/proc`, se aplican los siguientes límites mínimos de muestreo:
 
-**Por qué 7 procesos analizadores y no threads**
-Cada analizador hace trabajo CPU-bound (parsear /proc para todos los procesos del sistema).
-Con threads, el GIL de Python impediría la ejecución paralela real. Con procesos,
-cada analizador tiene su propio intérprete y corre en un core distinto.
+- `resumen`: 0.5s
+- `threads`: 0.5s
+- `memoria`: 1.0s
+- `sistema`: 1.0s
+- `fds`: 2.0s
+- `senales`: 5.0s
+- `scheduling`: 5.0s
 
-**Cómo se evitan race conditions**
-El snapshot usa Manager.dict cuyas operaciones son serializadas por el proceso Manager.
-Cada analizador escribe solo en su propia clave (snapshot resumen, snapshot memoria, etc.),
-sin solapamiento con los demás analizadores.
+---
 
-**Manejo de señales**
-Los handlers de señales solo setean flags (multiprocessing.Value con tipo b).
-La lógica real (dump, reload) se ejecuta en el loop principal de la TUI,
-no en el handler — esto garantiza que los handlers son async-signal-safe.
+## Ejecución
 
-## Limitaciones conocidas
+```bash
+# Iniciar monitor
+python3 src/main.py
 
-- El cálculo de CPU% requiere dos lecturas separadas; la primera lectura muestra 0%.
-- Algunos procesos del kernel no tienen cmdline — se muestra el nombre entre corchetes.
-- Procesos de otros usuarios pueden dar PermissionError al leer sus FDs.
-- El intervalo de los analizadores se pasa al crearlos y no se actualiza dinámicamente.
-
-## Autor
-
-Lucas Valdemoros — Ingeniería en Informática — Universidad de Mendoza — 2026
+# Enviar señales desde otra terminal
+kill -HUP $(pgrep -f "src/main.py")
+kill -USR2 $(pgrep -f "src/main.py")
+kill -USR1 $(pgrep -f "src/main.py")
