@@ -24,7 +24,11 @@ def ejecutar_analizador_scheduling(snapshot_dict, intervalo_val, stop_event):
                 'priority': stat['priority'],
                 'rt_priority': stat['rt_priority'],
                 'nice': stat['nice'],
-                'cpus_allowed': cpus_allowed
+                'cpus_allowed': cpus_allowed,
+                'ppid': stat['ppid'], 'pgrp': stat['pgrp'], 'session': stat['session'],
+                'utime': stat['utime'], 'stime': stat['stime'],
+                'voluntary_ctxt_switches': status['voluntary_ctxt_switches'] if status else 0,
+                'nonvoluntary_ctxt_switches': status['nonvoluntary_ctxt_switches'] if status else 0
             })
 
         snapshot_dict['scheduling'] = {

@@ -1,1 +1,1 @@
-{"resumen": 4.0, "memoria": 3.0, "fds": 2.5, "senales": 6.0, "threads": 2.0, "scheduling": 5.0, "sistema": 2.0}
+{"resumen": 2.0, "memoria": 3.0, "fds": 5.0, "senales": 10.0, "threads": 2.0, "scheduling": 10.0, "sistema": 2.0, "filtro_cmd": "", "filtro_usr": ""}

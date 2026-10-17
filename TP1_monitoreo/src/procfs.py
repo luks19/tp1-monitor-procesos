@@ -38,8 +38,11 @@ def listar_pids():
     return pids
 
 def leer_stat(pid):
+    return _leer_stat_archivo(f'/proc/{pid}/stat', pid)
+
+def _leer_stat_archivo(ruta, pid):
     try:
-        with open(f'/proc/{pid}/stat', 'r') as f:
+        with open(ruta, 'r') as f:
             contenido = f.read()
         
         inicio_comm = contenido.find('(')
@@ -67,7 +70,9 @@ def leer_stat(pid):
             'nice': int(resto[16]),
             'num_threads': int(resto[17]),
             'rt_priority': rt_prio,
-            'policy': policy_str
+            'policy': policy_str,
+            'pgrp': int(resto[2]),
+            'session': int(resto[3])
         }
     except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
         return None
@@ -97,8 +102,15 @@ def leer_status(pid):
             'vm_size': datos.get('VmSize', '0 kB'),
             'vm_rss': datos.get('VmRSS', '0 kB'),
             'vm_hwm': datos.get('VmHWM', '0 kB'),
+            'vm_data': datos.get('VmData', '0 kB'),
+            'vm_stk': datos.get('VmStk', '0 kB'),
+            'vm_exe': datos.get('VmExe', '0 kB'),
+            'vm_lib': datos.get('VmLib', '0 kB'),
+            'vm_swap': datos.get('VmSwap', '0 kB'),
             'threads': int(datos.get('Threads', 1)),
             'cpus_allowed_list': datos.get('Cpus_allowed_list', ''),
+            'voluntary_ctxt_switches': int(datos.get('voluntary_ctxt_switches', '0')),
+            'nonvoluntary_ctxt_switches': int(datos.get('nonvoluntary_ctxt_switches', '0')),
             'sig_blk': datos.get('SigBlk', '0'),
             'sig_ign': datos.get('SigIgn', '0'),
             'sig_cgt': datos.get('SigCgt', '0'),
@@ -125,6 +137,9 @@ def leer_maps(pid):
             'stack_kb': 0,
             'so_kb': 0,
             'bin_kb': 0,
+            'text_kb': 0,
+            'data_kb': 0,
+            'shared_kb': 0,
             'otros_kb': 0,
             'total_kb': 0
         }
@@ -144,12 +159,17 @@ def leer_maps(pid):
                 regiones['total_kb'] += tam_kb
                 if pathname == '[heap]':
                     regiones['heap_kb'] += tam_kb
+                    regiones['data_kb'] += tam_kb
                 elif pathname == '[stack]':
                     regiones['stack_kb'] += tam_kb
                 elif '.so' in pathname:
                     regiones['so_kb'] += tam_kb
+                    regiones['shared_kb'] += tam_kb
                 elif pathname.startswith('/') and 'x' in perms:
                     regiones['bin_kb'] += tam_kb
+                    regiones['text_kb'] += tam_kb
+                elif 'w' in perms:
+                    regiones['data_kb'] += tam_kb
                 else:
                     regiones['otros_kb'] += tam_kb
         return regiones
@@ -164,12 +184,58 @@ def leer_fds(pid):
             ruta_enlace = os.path.join(path_fd, fd_nombre)
             try:
                 destino = os.readlink(ruta_enlace)
-                fds.append({'fd': fd_nombre, 'destino': destino})
+                fds.append({'fd': fd_nombre, 'destino': destino, 'tipo': tipo_fd(destino)})
             except (FileNotFoundError, PermissionError):
                 continue
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         pass
     return fds
+
+def tipo_fd(destino):
+    if destino.startswith('socket:['):
+        return 'socket'
+    if destino.startswith('pipe:['):
+        return 'pipe'
+    if destino.startswith('/dev/tty') or destino.startswith('/dev/pts/') or destino == '/dev/console':
+        return 'tty'
+    if destino.startswith('/'):
+        return 'file'
+    return 'otro'
+
+def leer_threads(pid):
+    threads = []
+    try:
+        tids = os.listdir(f'/proc/{pid}/task')
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return threads
+    for tid_txt in tids:
+        if not tid_txt.isdigit():
+            continue
+        tid = int(tid_txt)
+        ruta = f'/proc/{pid}/task/{tid}'
+        stat = _leer_stat_archivo(f'{ruta}/stat', tid)
+        if not stat:
+            continue
+        try:
+            with open(f'{ruta}/comm', 'r') as archivo:
+                nombre = archivo.read().strip()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            nombre = stat['comm']
+        status = {}
+        try:
+            with open(f'{ruta}/status', 'r') as archivo:
+                for linea in archivo:
+                    clave, _, valor = linea.partition(':')
+                    status[clave.strip()] = valor.strip()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass
+        threads.append({
+            'tid': tid, 'nombre': nombre, 'state': stat['state'],
+            'utime': stat['utime'], 'stime': stat['stime'],
+            'voluntary_ctxt_switches': int(status.get('voluntary_ctxt_switches', '0')),
+            'nonvoluntary_ctxt_switches': int(status.get('nonvoluntary_ctxt_switches', '0'))
+        })
+    return threads
 
 def decodificar_senales(hex_mascara):
     try:

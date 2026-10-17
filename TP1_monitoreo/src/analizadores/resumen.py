@@ -47,6 +47,8 @@ def ejecutar_analizador_resumen(snapshot_dict, intervalo_val, stop_event):
 
             lista_resumen.append({
                 'pid': pid,
+                'ppid': stat['ppid'],
+                'num_threads': status['threads'] if status else stat['num_threads'],
                 'usuario': usuario,
                 'uid': uid,
                 'gid': gid,

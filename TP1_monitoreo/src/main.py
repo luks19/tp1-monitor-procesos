@@ -5,6 +5,7 @@ import time
 import signal
 import threading
 import multiprocessing
+import queue
 from multiprocessing import Process, Manager, Value, Event
 
 import display
@@ -17,12 +18,12 @@ from analizadores.scheduling import ejecutar_analizador_scheduling
 from analizadores.sistema import ejecutar_analizador_sistema
 
 CONFIG_DEFAULT = {
-    'resumen': 1.0,
-    'memoria': 2.0,
-    'fds': 3.0,
-    'senales': 5.0,
+    'resumen': 2.0,
+    'memoria': 3.0,
+    'fds': 5.0,
+    'senales': 10.0,
     'threads': 2.0,
-    'scheduling': 5.0,
+    'scheduling': 10.0,
     'sistema': 2.0
 }
 
@@ -46,58 +47,61 @@ def cargar_config():
             pass
     return CONFIG_DEFAULT.copy()
 
-def loop_senales(stop_event, flag_dump, flag_verbose, flag_reload, snapshot_dict, intervalos_sync):
+def cargar_filtros():
+    defaults = {'filtro_cmd': '', 'filtro_usr': ''}
+    try:
+        with open('config.json', 'r') as archivo:
+            cfg = json.load(archivo)
+        return {clave: str(cfg.get(clave, valor)) for clave, valor in defaults.items()}
+    except (OSError, ValueError, TypeError):
+        return defaults
+
+def loop_senales(stop_event, flag_verbose, snapshot_dict, intervalos_sync, cola_filtros, cola_senales):
     while not stop_event.is_set():
-        if flag_reload.value == 1:
+        try:
+            senal = cola_senales.get_nowait()
+        except queue.Empty:
+            stop_event.wait(timeout=0.2)
+            continue
+
+        if senal == signal.SIGHUP:
             cfg = cargar_config()
             for k, val in cfg.items():
                 if k in intervalos_sync:
                     intervalos_sync[k].value = val
-            flag_reload.value = 0
-
-        if flag_dump.value == 1:
+            cola_filtros.put(cargar_filtros())
+        elif senal == signal.SIGUSR1:
             try:
                 nombre_dump = f"dump_{int(time.time())}.json"
                 with open(nombre_dump, 'w') as f:
                     json.dump(dict(snapshot_dict), f, indent=2)
-            except Exception:
+            except OSError:
                 pass
-            flag_dump.value = 0
-
-        time.sleep(0.2)
+        elif senal == signal.SIGUSR2:
+            flag_verbose.value = 0 if flag_verbose.value else 1
+        elif senal in (signal.SIGINT, signal.SIGTERM):
+            stop_event.set()
 
 def main():
     config = cargar_config()
 
-    flag_dump = Value('b', 0)
     flag_verbose = Value('b', 0)
-    flag_reload = Value('b', 0)
+    cola_senales = queue.SimpleQueue()
     stop_event = Event()
 
     intervalos_sync = {
         k: Value('d', config[k]) for k in CONFIG_DEFAULT.keys()
     }
 
-    def handler_sighup(signum, frame):
-        flag_reload.value = 1
+    def encolar_senal(signum, frame):
+        cola_senales.put(signum)
 
-    def handler_sigusr1(signum, frame):
-        flag_dump.value = 1
-
-    def handler_sigusr2(signum, frame):
-        flag_verbose.value = 0 if flag_verbose.value == 1 else 1
-
-    def handler_sigterm(signum, frame):
-        stop_event.set()
-
-    signal.signal(signal.SIGHUP, handler_sighup)
-    signal.signal(signal.SIGUSR1, handler_sigusr1)
-    signal.signal(signal.SIGUSR2, handler_sigusr2)
-    signal.signal(signal.SIGINT, handler_sigterm)
-    signal.signal(signal.SIGTERM, handler_sigterm)
+    for senal in (signal.SIGHUP, signal.SIGUSR1, signal.SIGUSR2, signal.SIGINT, signal.SIGTERM):
+        signal.signal(senal, encolar_senal)
 
     manager = Manager()
     snapshot_dict = manager.dict()
+    cola_filtros = queue.Queue()
 
     workers_map = {
         'resumen': ejecutar_analizador_resumen,
@@ -121,13 +125,13 @@ def main():
 
     hilo_sig = threading.Thread(
         target=loop_senales,
-        args=(stop_event, flag_dump, flag_verbose, flag_reload, snapshot_dict, intervalos_sync),
+        args=(stop_event, flag_verbose, snapshot_dict, intervalos_sync, cola_filtros, cola_senales),
         daemon=True
     )
     hilo_sig.start()
 
     try:
-        display.iniciar_tui(snapshot_dict, intervalos_sync, flag_verbose, stop_event)
+        display.iniciar_tui(snapshot_dict, intervalos_sync, flag_verbose, stop_event, cargar_filtros(), cola_filtros)
     except KeyboardInterrupt:
         pass
     finally:
