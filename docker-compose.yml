@@ -18,11 +18,12 @@ services:
     stop_grace_period: 75s
   monitor:
     profiles: [tp1]
-    build: .
+    build:
+      context: .
+      dockerfile: TP1_monitoreo/Dockerfile
     tty: true
     stdin_open: true
     pid: "host"
     privileged: true
     volumes:
       - /proc:/proc:ro
-    command: python3 -m src.main
