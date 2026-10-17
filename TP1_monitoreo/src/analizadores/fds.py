@@ -9,6 +9,7 @@ def ejecutar_analizador_fds(snapshot_dict, intervalo_val, stop_event):
         for pid in pids:
             fds = procfs.leer_fds(pid)
             stat = procfs.leer_stat(pid)
+            status = procfs.leer_status(pid)
             cmdline = procfs.leer_cmdline(pid)
 
             nombre = cmdline if cmdline else (stat['comm'] if stat else f'PID {pid}')
@@ -16,6 +17,7 @@ def ejecutar_analizador_fds(snapshot_dict, intervalo_val, stop_event):
             datos_fds.append({
                 'pid': pid,
                 'nombre': nombre,
+                'usuario': status['usuario'] if status else 'unknown',
                 'cantidad_fds': len(fds),
                 'fds': fds
             })

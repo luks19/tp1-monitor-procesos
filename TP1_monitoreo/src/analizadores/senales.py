@@ -18,6 +18,7 @@ def ejecutar_analizador_senales(snapshot_dict, intervalo_val, stop_event):
             datos_senales.append({
                 'pid': pid,
                 'nombre': nombre,
+                'usuario': status['usuario'],
                 'bloqueadas': procfs.decodificar_senales(status['sig_blk']),
                 'ignoradas': procfs.decodificar_senales(status['sig_ign']),
                 'con_handler': procfs.decodificar_senales(status['sig_cgt']),

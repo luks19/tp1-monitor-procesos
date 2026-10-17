@@ -41,11 +41,15 @@ def ejecutar_analizador_resumen(snapshot_dict, intervalo_val, stop_event):
 
             nombre_cmd = cmdline if cmdline else stat['comm']
             usuario = status['usuario'] if status else 'unknown'
+            uid = status['uid'] if status else -1
+            gid = status['gid'] if status else -1
             vm_rss = status['vm_rss'] if status else '0 kB'
 
             lista_resumen.append({
                 'pid': pid,
                 'usuario': usuario,
+                'uid': uid,
+                'gid': gid,
                 'priority': stat['priority'],
                 'nice': stat['nice'],
                 'vm_rss': vm_rss,

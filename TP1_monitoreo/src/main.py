@@ -132,10 +132,12 @@ def main():
         pass
     finally:
         stop_event.set()
+        hilo_sig.join()
         for p in procesos:
             p.join(timeout=1.5)
             if p.is_alive():
                 p.terminate()
+                p.join()
         manager.shutdown()
 
 if __name__ == '__main__':

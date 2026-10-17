@@ -19,6 +19,7 @@ def ejecutar_analizador_scheduling(snapshot_dict, intervalo_val, stop_event):
             datos_sched.append({
                 'pid': pid,
                 'nombre': nombre,
+                'usuario': status['usuario'] if status else 'unknown',
                 'policy': stat['policy'],
                 'priority': stat['priority'],
                 'rt_priority': stat['rt_priority'],

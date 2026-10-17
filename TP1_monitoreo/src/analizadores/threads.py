@@ -10,6 +10,8 @@ def ejecutar_analizador_threads(snapshot_dict, intervalo_val, stop_event):
             stat = procfs.leer_stat(pid)
             if not stat:
                 continue
+
+            status = procfs.leer_status(pid)
             
             cmdline = procfs.leer_cmdline(pid)
             nombre = cmdline if cmdline else stat['comm']
@@ -17,6 +19,7 @@ def ejecutar_analizador_threads(snapshot_dict, intervalo_val, stop_event):
             datos_threads.append({
                 'pid': pid,
                 'nombre': nombre,
+                'usuario': status['usuario'] if status else 'unknown',
                 'num_threads': stat['num_threads'],
                 'state': stat['state'],
                 'priority': stat['priority'],

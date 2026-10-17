@@ -20,6 +20,7 @@ def ejecutar_analizador_memoria(snapshot_dict, intervalo_val, stop_event):
             datos_memoria.append({
                 'pid': pid,
                 'nombre': nombre,
+                'usuario': status['usuario'] if status else 'unknown',
                 'vm_size': status['vm_size'] if status else '0 kB',
                 'vm_rss': status['vm_rss'] if status else '0 kB',
                 'vm_hwm': status['vm_hwm'] if status else '0 kB',
