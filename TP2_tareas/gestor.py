@@ -51,7 +51,7 @@ class Gestor:
             raise SinCapacidad('Servidor cerrando')
         identificador = uuid4().hex
         # No hay await entre registrar y encolar: mismo hilo/event loop.
-        self.cola.put_nowait((identificador, pedido))
+        self.cola.put_nowait((identificador, pedido, time.perf_counter()))
         tarea = {
             'id': identificador, 'tipo': pedido.tipo, 'estado': 'pendiente',
             'parametros': pedido.model_dump(mode='json'), 'creada': time.time(),
@@ -67,10 +67,10 @@ class Gestor:
             try:
                 if item is CENTINELA:
                     return
-                ident, pedido = item
+                ident, pedido, encolada = item
                 if self.tareas[ident]['estado'] == 'cancelada':
                     continue
-                operacion = asyncio.create_task(self._procesar(ident, pedido),
+                operacion = asyncio.create_task(self._procesar(ident, pedido, encolada),
                                                name=f'tarea-{ident}')
                 self.activas[ident] = operacion
                 try:
@@ -91,11 +91,11 @@ class Gestor:
             return await hashear(pedido, self.pool, self.config.lote_hash)
         return await descargar(pedido, self.cliente, self.semaforo)
 
-    async def _procesar(self, ident, pedido):
+    async def _procesar(self, ident, pedido, encolada):
         tarea = self.tareas[ident]
         inicio = time.perf_counter()
         tarea.update(estado='ejecutando', iniciada=time.time())
-        tarea['espera_cola'] = tarea['iniciada'] - tarea['creada']
+        tarea['espera_cola'] = inicio - encolada
         try:
             async with asyncio.timeout(pedido.timeout):
                 resultado = await self._ejecutar(pedido)

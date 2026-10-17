@@ -60,6 +60,20 @@ async def test_arranque_informa_volcado_anterior(tmp_path, caplog):
     assert 'no se restaura' in caplog.text
 
 
+async def test_espera_en_cola_no_depende_de_ajustes_del_reloj(tmp_path, monkeypatch):
+    gestor = Gestor(Configuracion(directorio=tmp_path, workers=1))
+    await gestor.iniciar()
+    try:
+        ident = gestor.crear(Esperar(tipo='esperar', segundos=0.01))['id']
+        reloj = time.time
+        with monkeypatch.context() as cambio:
+            cambio.setattr(time, 'time', lambda: reloj() + 3600)
+            await gestor.cola.join()
+        assert 0 <= gestor.tareas[ident]['espera_cola'] < 1
+    finally:
+        await gestor.cerrar()
+
+
 @pytest.mark.parametrize('senal', [signal.SIGTERM, signal.SIGINT])
 def test_senal_real_cierra_servidor_y_persiste_estado(tmp_path, senal):
     # Proceso separado: el cliente sigue vivo aunque el event loop del servidor falle.
