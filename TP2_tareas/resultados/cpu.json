@@ -1,0 +1,22 @@
+{
+  "modo": "cpu",
+  "fecha_utc": "2026-10-17T14:38:04.493180+00:00",
+  "entorno": {
+    "python": "3.12.3",
+    "sistema": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu_logicas": 16
+  },
+  "workers": 4,
+  "procesos": 2,
+  "iteraciones": 2000000,
+  "sin_executor": {
+    "get_segundos": 1.0892351970032905,
+    "total_segundos": 1.1152369949995773,
+    "estado": "completada"
+  },
+  "con_executor": {
+    "get_segundos": 0.003375788997800555,
+    "total_segundos": 1.128917205001926,
+    "estado": "completada"
+  }
+}

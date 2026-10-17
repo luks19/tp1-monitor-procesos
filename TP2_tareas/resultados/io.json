@@ -1,0 +1,20 @@
+{
+  "modo": "io",
+  "fecha_utc": "2026-10-17T14:37:59.031347+00:00",
+  "entorno": {
+    "python": "3.12.3",
+    "sistema": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu_logicas": 16
+  },
+  "workers": 4,
+  "procesos": 2,
+  "iteraciones": 2000000,
+  "descargas": 20,
+  "bytes_por_respuesta": 1024,
+  "exitosas_secuenciales": 20,
+  "exitosas_concurrentes": 20,
+  "secuencial_segundos": 2.2229949259999557,
+  "concurrente_segundos": 0.23141683799622115,
+  "speedup": 9.60602065626813,
+  "demora_http": 0.1
+}

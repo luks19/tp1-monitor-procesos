@@ -1,0 +1,64 @@
+{
+  "modo": "pool",
+  "fecha_utc": "2026-10-17T14:43:52.855630+00:00",
+  "entorno": {
+    "python": "3.12.3",
+    "sistema": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "cpu_logicas": 16
+  },
+  "workers": 4,
+  "procesos": 2,
+  "iteraciones": 400000,
+  "lotes": [
+    {
+      "cantidad": 2,
+      "total_segundos": 0.3860499959992012,
+      "completadas": 2,
+      "fallidas": 0,
+      "tareas_por_segundo": 5.180676131917738,
+      "espera_cola_promedio": 0.000662471997202374,
+      "ejecucion_promedio": 0.36786747600126546,
+      "latencia_p95": 0.36881092000112403
+    },
+    {
+      "cantidad": 4,
+      "total_segundos": 0.8189694160028012,
+      "completadas": 4,
+      "fallidas": 0,
+      "tareas_por_segundo": 4.884187274688556,
+      "espera_cola_promedio": 0.0008503320004820125,
+      "ejecucion_promedio": 0.732365975747598,
+      "latencia_p95": 0.7952733729980537
+    },
+    {
+      "cantidad": 8,
+      "total_segundos": 1.1161701109958813,
+      "completadas": 8,
+      "fallidas": 0,
+      "tareas_por_segundo": 7.167366265400311,
+      "espera_cola_promedio": 0.26232539762622764,
+      "ejecucion_promedio": 0.5266844429988851,
+      "latencia_p95": 1.0624360170040745
+    },
+    {
+      "cantidad": 16,
+      "total_segundos": 2.2268518559940276,
+      "completadas": 16,
+      "fallidas": 0,
+      "tareas_por_segundo": 7.185031171666281,
+      "espera_cola_promedio": 0.7859323991247038,
+      "ejecucion_promedio": 0.5406798937501662,
+      "latencia_p95": 2.179746581998188
+    },
+    {
+      "cantidad": 32,
+      "total_segundos": 4.424196576001123,
+      "completadas": 32,
+      "fallidas": 0,
+      "tareas_por_segundo": 7.232951667107813,
+      "espera_cola_promedio": 1.8905487389999962,
+      "ejecucion_promedio": 0.5418988882188387,
+      "latencia_p95": 4.289484203000029
+    }
+  ]
+}

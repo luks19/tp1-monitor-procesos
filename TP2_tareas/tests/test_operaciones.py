@@ -127,6 +127,10 @@ async def test_detener_operacion_y_reutilizar_worker(tmp_path, web, tipo, motivo
             assert r.json()['estado'] == 'cancelada'
         t = await terminar(c, ident)
         assert t['estado'] == ('cancelada' if motivo == 'cancelacion' else 'fallida')
+        inicio_siguiente = time.perf_counter()
         siguiente = await enviar(c, tipo='hashear', texto='x', iteraciones=20)
         assert (await terminar(c, siguiente))['estado'] == 'completada'
+        # Si el cálculo cancelado siguiera ocupando el único proceso, este
+        # trabajo corto quedaría detrás de millones de iteraciones abandonadas.
+        assert time.perf_counter() - inicio_siguiente < 0.5
         assert (await c.get('/estadisticas')).json()['workers_ocupados'] == 0
