@@ -187,3 +187,11 @@ Cada comando levanta sus servidores en puertos locales libres y los cierra. No r
 - Una URL con error no invalida otras descargas; revisar `error` por URL. No se conservan resultados parciales del lote si vence el timeout global.
 - No hay reintentos automáticos, autenticación, prioridades, WebSockets ni supervisión de procesos ante fallos catastróficos. La API queda publicada solo en loopback del host.
 - Los experimentos son corridas locales, con cliente y generador de carga propios; no prueban todos los tamaños de respuesta, máquinas o patrones de llegada.
+
+## Aprendizaje personal
+
+Una de las cosas que me quedó más clara con este trabajo es la diferencia entre aceptar una tarea y ejecutarla. Que la API devuelva un identificador no significa que el trabajo haya terminado: puede seguir pendiente en la cola hasta que un worker esté disponible. También entendí mejor que el worker sigue funcionando después de terminar o cancelar una tarea y puede atender la siguiente.
+
+Otro punto fue la cancelación. Antes podía pensar que mostrar el estado “cancelada” era suficiente, pero hay que comprobar qué pasó con la operación. No es lo mismo cancelar una tarea pendiente que una que ya empezó. Además, después de cancelarla, hay que verificar que el servicio pueda seguir procesando trabajos.
+
+Esto se relaciona con la devolución de mi TP1: no alcanza con que una función esté escrita o que el README diga que funciona. Hay que comprobar su efecto real. Para este trabajo tomé esa corrección como criterio de revisión: mirar los estados, los resultados y el comportamiento posterior, en lugar de quedarme solamente con la respuesta de una operación.
