@@ -2,11 +2,16 @@
 import asyncio
 import json
 import logging
+import multiprocessing
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from uuid import uuid4
 
+import httpx
+
 from .modelos import Configuracion, Pedido
+from .tareas import descargar, hashear
 
 log = logging.getLogger(__name__)
 CENTINELA = object()
@@ -32,6 +37,11 @@ class Gestor:
         previos = sorted(self.config.directorio.glob('estado_*.json'))
         if previos:
             log.info('Volcado previo encontrado: %s (no se restaura)', previos[-1])
+        self.cliente = httpx.AsyncClient(timeout=10, trust_env=False)
+        self.semaforo = asyncio.Semaphore(self.config.descargas)
+        self.pool = ProcessPoolExecutor(
+            max_workers=self.config.procesos,
+            mp_context=multiprocessing.get_context('spawn'))
         self.workers = [asyncio.create_task(self._worker(), name=f'worker-{i}')
                         for i in range(self.config.workers)]
         self.aceptando = True
@@ -77,7 +87,9 @@ class Gestor:
         if pedido.tipo == 'esperar':
             await asyncio.sleep(pedido.segundos)
             return {'segundos': pedido.segundos}
-        raise ValueError('Operación todavía no implementada')
+        if pedido.tipo == 'hashear':
+            return await hashear(pedido, self.pool, self.config.lote_hash)
+        return await descargar(pedido, self.cliente, self.semaforo)
 
     async def _procesar(self, ident, pedido):
         tarea = self.tareas[ident]
@@ -112,6 +124,10 @@ class Gestor:
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
+            if operacion.cancelled() and tarea['estado'] not in TERMINALES:
+                # Puede cancelarse antes de ejecutar la primera instrucción:
+                # en ese caso el finally de _procesar nunca llegó a instalarse.
+                tarea.update(estado='cancelada', finalizada=time.time())
         else:
             tarea.update(estado='cancelada', finalizada=time.time())
         return tarea.copy()
@@ -145,6 +161,8 @@ class Gestor:
         for _ in self.workers:
             await self.cola.put(CENTINELA)
         await asyncio.gather(*self.workers)
+        await self.cliente.aclose()
+        await asyncio.to_thread(self.pool.shutdown, wait=True, cancel_futures=True)
         destino = self.config.directorio / f'estado_{time.time_ns()}.json'
         temporal = destino.with_suffix('.tmp')
         temporal.write_text(json.dumps(list(self.tareas.values()), indent=2,
