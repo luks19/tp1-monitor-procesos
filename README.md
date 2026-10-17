@@ -1,4 +1,19 @@
-# Monitor de Procesos y Threads en Linux
+# Computación II — Lucas Valdemoros
+
+## TP2 — Plataforma de tareas distribuidas
+
+Trabajo actual: [informe, uso, arquitectura, pruebas y mediciones](TP2_tareas/README.md).
+
+Desde la raíz:
+
+```bash
+docker compose up --build
+```
+
+API en `http://127.0.0.1:8000`, documentación en `http://127.0.0.1:8000/docs`.
+El código del TP1 se conserva en `src/`; su configuración Docker está bajo el perfil `tp1`.
+
+## TP1 — Monitor de Procesos y Threads en Linux
 
 Monitor de procesos y threads del sistema operativo Linux en tiempo real implementado en Python 3 sobre arquitectura multiproceso POSIX, sin dependencias de bibliotecas de terceros para la extracción de métricas del kernel (`/proc`).
 
