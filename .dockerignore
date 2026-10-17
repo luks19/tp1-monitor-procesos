@@ -1,0 +1,10 @@
+.git
+.venv
+venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+.env
+TP2_tareas/estado
+TP2_tareas/tests
+TP2_tareas/resultados

@@ -1,5 +1,6 @@
 """API HTTP y ciclo de vida: clases 19–21."""
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,8 @@ def crear_app(config=None):
 
     @asynccontextmanager
     async def ciclo(app):
+        logging.basicConfig(level=logging.INFO,
+                            format='%(levelname)s %(name)s: %(message)s')
         gestor = Gestor(configuracion)
         app.state.gestor = gestor
         await gestor.iniciar()

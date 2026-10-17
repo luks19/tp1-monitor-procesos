@@ -1,5 +1,23 @@
 services:
+  tareas:
+    build:
+      context: .
+      dockerfile: TP2_tareas/Dockerfile
+    init: true
+    ports:
+      - "127.0.0.1:${TP2_PUERTO:-8000}:8000"
+    environment:
+      TP2_WORKERS: ${TP2_WORKERS:-4}
+      TP2_PROCESOS: ${TP2_PROCESOS:-2}
+      TP2_CAPACIDAD: ${TP2_CAPACIDAD:-100}
+      TP2_DESCARGAS: ${TP2_DESCARGAS:-20}
+      TP2_LOTE_HASH: ${TP2_LOTE_HASH:-100000}
+      TP2_CIERRE: ${TP2_CIERRE:-3}
+    volumes:
+      - ./TP2_tareas/estado:/datos
+    stop_grace_period: 75s
   monitor:
+    profiles: [tp1]
     build: .
     tty: true
     stdin_open: true
